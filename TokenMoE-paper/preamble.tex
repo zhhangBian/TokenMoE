@@ -1,0 +1,53 @@
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xspace}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{subcaption}
+\usepackage[capitalize]{cleveref}
+\usepackage{enumitem}
+\usepackage{siunitx}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+\usepackage{algorithm}
+\usepackage{tabularx}
+\usepackage{makecell}
+\usepackage{ragged2e}
+\usepackage{multirow}
+
+\tolerance=1000
+\emergencystretch=1em
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\bfseries\color{teal},
+  stringstyle=\color{magenta},
+  commentstyle=\itshape\color{gray},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  frameround=tttt,
+  backgroundcolor=\color{white},
+  numbers=left,
+  numberstyle=\tiny,
+  xleftmargin=2em,
+  morekeywords={self},
+}
+
+\newcommand{\project}{TokenMoE\xspace}
+\newcommand{\RouteSig}{RouteSig\xspace}
+\newcommand{\MoE}{Mixture-of-Experts\xspace}
+\newcommand{\MoEs}{Mixture-of-Experts\xspace}
+\newcommand{\EWS}{expert working set\xspace}
+\newcommand{\EWSs}{expert working sets\xspace}
+\newcommand{\KV}{KV cache\xspace}
+\newcommand{\AgentMeta}{AgentNodeMeta\xspace}
+\newcommand{\Qwen}{Qwen2.5-7B-Instruct\xspace}
+\newcommand{\TinyMixtral}{TitanML/tiny-mixtral\xspace}
+
+\newcommand{\fy}[1]{{\color{blue}\textit{[#1]}}}
+\newcommand{\todo}[1]{{\color{red}\textit{[todo: #1]}}}

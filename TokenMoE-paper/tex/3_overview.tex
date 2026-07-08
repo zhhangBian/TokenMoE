@@ -1,0 +1,31 @@
+\section{Overview}
+\label{sec:overview}
+
+\project is organized around a simple control loop.
+Before a request is decoded, the runtime extracts \AgentMeta.
+If the model exposes routed experts, the sidecar queries \RouteSig to predict a per-layer \EWS.
+The serving policy may use this prediction to prefetch experts, batch requests with similar expert demand, or bias expert-placement decisions.
+After decoding, the exact routed experts are logged and fed back into \RouteSig.
+If the model is dense or routed capture is unavailable, the same metadata path executes but returns a no-op fallback.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{img/drawio/routesig_pipeline.drawio.png}
+\Description{A pipeline shows workload records, routed traces, RouteSig learning, replay simulators, and vLLM dense fallback.}
+\caption{
+\project's trace-first pipeline.
+Routed MoE traces train and validate \RouteSig.
+The vLLM sidecar shares the same metadata path and falls back when a model has no router.
+}
+\label{fig:pipeline}
+\end{figure}
+
+\project separates four concerns.
+\textbf{Metadata schema} normalizes agent request fields into \AgentMeta.
+\textbf{Trace collection} records prompt, metadata, per-layer selected experts, and environment provenance.
+\textbf{Prediction} maps metadata to route signatures with hierarchical fallback.
+\textbf{Replay} evaluates policies without modifying model output.
+This separation lets us test the MoE opportunity on a small routed model and independently validate the vLLM integration path on the user-specified dense Qwen model.
+
+The artifact stores all intermediate evidence:
+raw workloads in \texttt{data/workloads}, routed traces in \texttt{data/traces}, vLLM generations in \texttt{data/vllm\_qwen}, derived metrics and figures in \texttt{analysis}, and human-readable reports in \texttt{reports}.

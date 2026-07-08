@@ -1,0 +1,53 @@
+\section{Introduction}
+\label{sec:intro}
+
+Multi-agent LLM applications turn one user request into a graph of planning, tool-use, coding, verification, search, and critique subrequests.
+These subrequests are not exchangeable.
+A planner prompt, a code-writing prompt, and a regression-test prompt expose different context structure, latency criticality, and output distribution.
+Existing serving systems exploit some of this structure for scheduling or prefix reuse, but \MoE serving introduces a second control problem: which experts should be resident, prefetched, or preferentially colocated before the token router reveals its top-$k$ decision?
+
+The default answer is reactive.
+A \MoE layer routes tokens, the runtime observes the selected experts, and the system then pays the cost of fetching, activating, or balancing the required expert shards.
+This is robust, but it misses a source of information available before decode begins.
+Agent orchestration frameworks know the request role, phase, tool type, graph node type, dependency fanout, and prompt-block composition at scheduling time.
+These fields are not semantic labels attached after the fact; they are control-plane signals used to build the request.
+If they correlate with expert choices, a serving engine can prepare the likely \EWS early while still falling back to exact routing for correctness.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{img/drawio/tokenmoe_overview.drawio.png}
+\Description{A schematic shows agent metadata flowing into a RouteSig store, which predicts expert working sets for prefetch, scheduling, and placement while the model router remains authoritative.}
+\caption{
+\project exposes agent metadata to a sidecar predictor before decoding.
+The model router remains authoritative; predicted \EWSs only guide prefetching, batching, and placement.
+}
+\label{fig:overview}
+\end{figure}
+
+This paper presents \project, a prototype and study of agent-conditioned expert working sets for \MoE LLM serving.
+\project is deliberately trace-first.
+Rather than modifying router choices, it records routed experts, learns metadata-conditioned distributions, and evaluates how those distributions would affect prefetch, scheduling, and placement policies.
+The central abstraction is \RouteSig, an online route-signature store keyed by hierarchical \AgentMeta fields.
+A lookup first tries the most specific key, such as agent, role, phase, and prompt blocks; if evidence is sparse, it falls back through role/phase and global keys.
+Each signature reports top experts, entropy, confidence, sample count, and miss cost.
+
+The design has two important safety properties.
+First, \project never changes the model's selected experts or generated tokens.
+Route predictions are hints for systems work that can be undone or ignored.
+Second, \project includes explicit capability detection.
+When the target model is dense, as with the requested \Qwen path in this artifact, routed-expert capture is disabled and the system records a no-router fallback instead of fabricating MoE traces.
+This boundary matters because production serving paths often mix dense and MoE models behind the same scheduler.
+
+Our evaluation follows this separation.
+On \TinyMixtral, which exposes real router logits, we collect 80 routed traces over synthetic but structured agent workflows.
+\RouteSig achieves an 86.1\% top-4 expert-label hit rate, compared with 77.4\% for a global-frequency baseline.
+Replay simulation estimates a 160.4 ms stall-reduction opportunity with a 2.1\% wasted-prefetch rate, and an EPLB-style placement replay lowers p95 tail load from 585.0 to 546.4 tokens.
+On \Qwen, we build a clean conda environment named \texttt{tokenmoe}, install vLLM 0.8.5.post1 with CUDA 12.4 PyTorch 2.6.0, and run real vLLM end-to-end generation over the full 216-request agent workload.
+Because \Qwen is a dense Qwen2 model, \project correctly takes the dense fallback and measures the overhead of metadata decisions without claiming routed-expert speedups.
+
+We make three contributions:
+\begin{enumerate}
+  \item We identify agent metadata as an early signal for \MoE \EWS prediction and define \RouteSig, a hierarchical online store that converts agent structure into per-layer expert distributions.
+  \item We implement a reproducible trace-first prototype with workload generation, routed trace collection, vLLM-aware capability detection, prefetch/scheduling/EPLB replay, tests, logs, and reports.
+  \item We evaluate both opportunity and deployment boundary: real \TinyMixtral router traces show useful locality, while real vLLM/\Qwen experiments show safe dense-model fallback and end-to-end artifact provenance.
+\end{enumerate}

@@ -1,0 +1,22 @@
+\section{Related Work}
+\label{sec:related}
+
+\textbf{LLM serving.}
+vLLM~\cite{vllm} popularized paged attention and high-throughput request scheduling for LLM serving.
+SGLang~\cite{sglang} exposes structured generation programs and runtime optimizations for agent-like workloads.
+\project is complementary: it targets early expert working-set prediction for MoE models and keeps the model router authoritative.
+
+\textbf{MoE systems.}
+Expert-parallel and expert-placement systems optimize how sparse experts are placed and balanced across accelerators.
+EPLB-style policies use observed token load to rebalance expert placement.
+\project adds a request-level prior from agent metadata, which can be combined with observed load rather than replacing it.
+
+\textbf{Cache and agent serving.}
+Recent cache-centric systems exploit prefix reuse, position-independent reuse, or KV movement to reduce context cost.
+Agent schedulers exploit graph structure and dependencies.
+\project studies a different resource: routed expert demand.
+The same agent graph metadata that helps scheduling can also predict expert working sets before decode.
+
+\textbf{Routing predictability.}
+Prior work observes locality and specialization in MoE routers.
+\project turns this observation into a serving-side artifact: a hierarchical online store, confidence estimates, trace format, and fallback behavior that can be tested on both routed and dense models.

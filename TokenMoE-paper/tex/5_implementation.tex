@@ -1,0 +1,26 @@
+\section{Implementation}
+\label{sec:implementation}
+
+The prototype is implemented as a Python package with scripts for reproducibility.
+\texttt{tokenmoe/schema.py} defines workloads and \AgentMeta.
+\texttt{tokenmoe/trace.py} defines routed trace records.
+\texttt{tokenmoe/routesig.py} implements the online store.
+\texttt{tokenmoe/simulators.py} evaluates prefetch, scheduling, and EPLB-style placement.
+\texttt{tokenmoe/vllm\_sidecar.py} implements capability detection and dense fallback decisions.
+
+The main scripts are:
+\begin{itemize}[leftmargin=*]
+  \item \texttt{scripts/download\_workloads.py}: generate deterministic agent workflows.
+  \item \texttt{scripts/collect\_traces.py}: collect real routed traces through Transformers or vLLM when routed capture is available.
+  \item \texttt{scripts/analyze\_traces.py}: compute locality, replay metrics, figures, and Markdown reports.
+  \item \texttt{scripts/run\_vllm\_qwen\_experiment.py}: run real vLLM generation on \Qwen with baseline and sidecar modes.
+  \item \texttt{scripts/run\_vllm\_qwen\_sharded.sh}: run resumable vLLM experiments with per-shard logs and GPU-free-memory checks.
+  \item \texttt{scripts/analyze\_vllm\_qwen.py}: generate latency summaries, figures, and the end-to-end report.
+\end{itemize}
+
+The vLLM environment is a conda environment named \texttt{tokenmoe}.
+The final verified stack uses Python 3.10, PyTorch 2.6.0+cu124, vLLM 0.8.5.post1, Transformers 4.51.3, and xFormers 0.0.29.post2.
+An attempted installation with Transformers 5.12.1 failed because the tokenizer API removed \texttt{all\_special\_tokens\_extended}; this failure is kept in the logs and the environment was corrected by pinning Transformers to the vLLM-compatible 4.51.x line.
+
+The end-to-end vLLM runner writes raw generations, per-request latency CSV, sidecar decisions, model capability JSON, and shard summaries.
+It also removes the repository checkout from the vLLM import path before importing vLLM so that Python resolves to the installed wheel rather than the local \texttt{vllm/} checkout.

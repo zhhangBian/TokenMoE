@@ -1,0 +1,7 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+\project studies a practical question for MoE LLM serving: can agent metadata predict expert working sets early enough to guide systems decisions?
+Real routed traces show that hierarchical agent metadata improves top-4 expert prediction over a global baseline, and replay simulators expose prefetch and placement opportunities.
+The requested \Qwen vLLM experiment establishes the other half of the contract: dense models must take an explicit no-router fallback rather than produce misleading MoE traces.
+The result is a trace-first, reproducible prototype that separates opportunity, safety boundary, and deployment mechanics.

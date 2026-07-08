@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\caption{Real vLLM/\Qwen end-to-end run over 216 agent requests per mode and batch size. The model is dense, so routed-expert capture is disabled and the sidecar records explicit fallback decisions.}
+\label{tab:vllm-summary}
+\begin{tabular}{llrrrrr}
+\toprule
+Mode & Batch & Requests & Mean ms & P95 ms & Req/s & Sidecar us \\
+\midrule
+Baseline & 1 & 216 & 364.5 & 373.1 & 2.74 & 0.0 \\
+Baseline & 2 & 216 & 181.4 & 186.8 & 5.51 & 0.0 \\
+Baseline & 4 & 216 & 93.0 & 97.1 & 10.76 & 0.0 \\
+Baseline & 8 & 216 & 48.9 & 49.8 & 20.45 & 0.0 \\
+TokenMoE sidecar & 1 & 216 & 351.7 & 359.2 & 2.84 & 41.6 \\
+TokenMoE sidecar & 2 & 216 & 181.5 & 187.3 & 5.51 & 42.7 \\
+TokenMoE sidecar & 4 & 216 & 93.3 & 94.8 & 10.71 & 14.9 \\
+TokenMoE sidecar & 8 & 216 & 48.9 & 49.8 & 20.44 & 10.0 \\
+\bottomrule
+\end{tabular}
+\end{table*}

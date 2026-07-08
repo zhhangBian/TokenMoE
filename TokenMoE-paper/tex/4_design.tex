@@ -1,0 +1,47 @@
+\section{Design}
+\label{sec:design}
+
+\subsection{Agent Metadata}
+\AgentMeta contains the request ID, agent ID, role, phase, tool type, graph-node type, prompt-block types, ready time, deadline, run probability, and criticality.
+The most important design choice is the fallback key order.
+For a request with agent $a$, role $r$, phase $p$, and prompt-block key $b$, \project tries:
+\[
+(a,r,p,b) \rightarrow (r,p,b) \rightarrow (r,p) \rightarrow (r) \rightarrow global.
+\]
+Specific keys capture stable agent behavior when enough samples exist.
+Coarser keys avoid cold-start failure.
+
+\subsection{Route Signatures}
+\RouteSig maintains expert counts per key and layer.
+For each key-layer pair it derives a probability distribution, top-$M$ experts, entropy, confidence, miss costs, sample count, and update timestamp.
+Confidence combines sample count, distribution concentration, and recent active-set stability.
+High-confidence signatures can drive aggressive prefetch; low-confidence signatures can be used only for soft scheduling or ignored.
+
+\begin{algorithm}[t]
+\caption{\RouteSig lookup}
+\label{alg:routesig}
+\begin{algorithmic}[1]
+\Procedure{Lookup}{$meta, layer, min\_confidence$}
+  \For{$key$ in \Call{FallbackKeys}{$meta$}}
+    \State $sig \gets$ \Call{Signature}{$key, layer$}
+    \If{$sig \neq \emptyset$ and $sig.confidence \geq min\_confidence$}
+      \State \Return $sig$
+    \EndIf
+  \EndFor
+  \State \Return $\emptyset$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Serving Policies}
+\project evaluates three policies.
+\textbf{Prefetch} loads the predicted top-$M$ experts before router execution and counts hits, misses, wasted prefetches, and a stall-reduction proxy.
+\textbf{Scheduling} groups requests whose predicted \EWSs overlap, while preserving dependency order.
+\textbf{Placement} uses predicted demand to evaluate an EPLB-style expert movement decision, accepting moves that reduce tail load and rejecting unstable moves.
+All three policies are advisory: exact routing remains authoritative.
+
+\subsection{Capability Gate}
+The vLLM sidecar inspects the model config before requesting routed-expert capture.
+Fields such as \texttt{num\_local\_experts}, \texttt{num\_experts\_per\_tok}, or architecture names containing ``MoE'' enable routed capture.
+Dense configs return a structured fallback reason.
+This design keeps one serving path for dense and MoE models while making unsupported optimization explicit.
