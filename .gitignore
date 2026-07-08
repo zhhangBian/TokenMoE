@@ -5,5 +5,5 @@ __pycache__/
 logs/
 
 # Common local scratch directories.
-archieve/
-archive/
+/archieve/
+/archive/
