@@ -4,7 +4,7 @@
 
 ### 从Expert状态的视角看MoE模型
 
-本工作的优化对象不是KVCache，也不是Agent图上的子图执行，而是MoE模型中的**Expert状态**。
+本工作的优化对象是MoE模型中的**Expert状态**。
 
 MoE模型把Transformer中的部分FFN层替换为多个专家。每个token先经过router，router选择少量专家进行计算。例如DeepSeek-V3是671B总参数、每token激活37B参数；Qwen3-235B-A22B是235B总参数、每token激活22B参数；Kimi K2是1T总参数、每token激活32B参数。MoE的优势是计算稀疏，但系统问题也来自这里：**需要存储的专家很多，实际激活的专家很少，且激活集合由运行时router决定**。
 
@@ -23,13 +23,43 @@ MoE模型把Transformer中的部分FFN层替换为多个专家。每个token先�
 
 Agent Serving不同。一个Agent应用通常由Orchestrator调度多个LLM请求。每个请求可以看作Agent执行图上的一个节点：
 
-```
-Planner
-  ├── Search Agent
-  │     └── Summarizer
-  └── Code Agent
-        └── Tester
-  └── Critic / Merger
+```mermaid
+flowchart TD
+  O[Agent Orchestrator]
+
+  O --> P0
+  subgraph W1[planner-coder-tester]
+    P0[planner<br/>phase=plan] --> C0[coder<br/>phase=act<br/>tool=python]
+    C0 --> T0[tester<br/>phase=verify<br/>tool=pytest]
+    T0 --> R0[critic<br/>phase=reflect]
+  end
+
+  O --> SP0
+  subgraph W2[search-summarize]
+    SP0[planner<br/>phase=plan] --> S0[searcher<br/>phase=act<br/>tool=web_search]
+    S0 --> SUM0[summarizer<br/>phase=summarize]
+  end
+
+  O --> I0
+  subgraph W3[tool-use]
+    I0[tool_caller<br/>phase=observe<br/>tool=shell] --> A0[tool_caller<br/>phase=act<br/>tool=python]
+    A0 --> E0[assistant<br/>phase=summarize]
+  end
+
+  O --> M0
+  subgraph W4[multi-agent-discussion]
+    M0[moderator<br/>phase=plan] --> A1[analyst A<br/>phase=argue]
+    M0 --> A2[analyst B<br/>phase=argue]
+    A1 --> MG[merger<br/>phase=summarize]
+    A2 --> MG
+  end
+
+  O --> ST0
+  subgraph W5[swe-agent-code-repair]
+    ST0[tester<br/>phase=observe<br/>tool=pytest] --> D0[debugger<br/>phase=reflect]
+    D0 --> PC0[coder<br/>phase=act<br/>tool=python]
+    PC0 --> RT0[tester<br/>phase=verify<br/>tool=pytest]
+  end
 ```
 
 图上的每个节点都是一次LLM请求。这个节点在进入模型之前，系统已经知道一些信息：
@@ -292,16 +322,6 @@ RouteSig(key, layer):
 - `confidence` 由样本数、entropy和最近trace稳定性决定；
 - `miss_cost[e]` 表示如果expert不在GPU上，代价有多高。
 
-为了避免冷启动，采用分层回退：
-
-```
-(agent_id, role, phase, block_type)
-  -> (role, phase, block_type)
-  -> (role, phase)
-  -> (role)
-  -> global
-```
-
 如果某个agent已经积累足够trace，就用agent-specific signature；否则用role或phase级别统计。
 
 ### 模块3：端侧Expert Cache和Prefetch
@@ -467,25 +487,6 @@ Agent runtime本来就需要调度ready nodes。TokenMoE把MoE expert overlap加
 
 对于MoE模型，这直接影响kernel效率和通信效率。
 
-### 创新点4：Proactive Expert Replica Placement
-
-服务端MoE中的hot experts不是随机出现的。Agent workload的role mix和phase mix会造成可预测的expert burst。
-
-TokenMoE用未来agent mix预测expert load，在负载峰值出现前做replica placement。
-
-### 创新点5：Exact Output
-
-TokenMoE不需要改变router，不需要训练模型，不需要近似expert选择。
-
-真实router仍然执行。预测只影响系统状态准备：
-
-```
-预测正确 -> 更快
-预测错误 -> fallback，输出不变
-```
-
-这使得TokenMoE可以先作为serving系统优化，而不是模型算法改动。
-
 ## 与已有工作的边界
 
 | 工作 | 主要对象 | 使用信号 | 与TokenMoE的区别 |
@@ -499,136 +500,271 @@ TokenMoE不需要改变router，不需要训练模型，不需要近似expert选
 | ReMoE | Router fine-tuning | 修改router行为 | TokenMoE不改router，不改变模型行为 |
 | vLLM EPLB | Expert replica load balance | 最近负载统计 | TokenMoE用未来agent mix做proactive replica placement |
 
-## 代码实现思路
+## 当前MoE实验设置与结论
 
-### 集成位置
+这一节记录当前已经完成的MoE相关实验。
 
-TokenMoE适合做在vLLM或SGLang这类serving runtime中。
+### Agent workload配置
 
-需要的接口：
-
-- 请求进入调度器时，携带Agent metadata；
-- MoE层执行后，导出router top-k和expert load trace；
-- expert manager支持异步load、evict和prefetch；
-- scheduler可以在ready set内调整batch组合；
-- EP runtime可以读取expert demand预测，辅助replica placement。
-
-### 数据结构
-
-#### Agent Node Metadata
-
-```python
-@dataclass
-class AgentNodeMeta:
-    request_id: str
-    agent_id: str
-    role: str
-    phase: str
-    tool_type: str | None
-    graph_node_type: str
-    prompt_block_types: list[str]
-    ready_time: float
-    deadline: float | None
-```
-
-#### Route Signature
-
-```python
-@dataclass
-class RouteSignature:
-    key: tuple[str, ...]
-    layer_id: int
-    expert_prob: torch.Tensor      # [num_experts]
-    top_experts: torch.Tensor      # [top_m]
-    entropy: float
-    confidence: float
-    miss_cost: torch.Tensor        # [num_experts]
-    sample_count: int
-```
-
-#### Expert Demand
-
-```python
-@dataclass
-class ExpertDemand:
-    layer_id: int
-    expert_id: int
-    probability: float
-    expected_tokens: float
-    miss_cost: float
-    deadline: float
-```
-
-### 端侧Prefetch算法
-
-```python
-def plan_expert_residency(future_nodes, route_sigs, cache_budget):
-    demands = defaultdict(float)
-
-    for node in future_nodes:
-        p_node = node.run_probability
-        criticality = node.criticality
-
-        for layer in moe_layers:
-            sig = route_sigs.lookup(node, layer)
-            for expert in sig.top_experts:
-                demands[(layer, expert)] += (
-                    p_node
-                    * sig.expert_prob[expert]
-                    * sig.miss_cost[expert]
-                    * criticality
-                )
-
-    keep_set = knapsack_by_expert_size(demands, cache_budget)
-    return keep_set
-```
-
-执行时：
+当前原型没有接入LangChain、AutoGen、CrewAI或SWE-agent运行时本身，而是使用TokenMoE内部的规范化Agent workload生成器。这样做的目的是把不同Agent框架都会暴露的结构统一成一组稳定字段：
 
 ```
-keep_set - resident_set -> prefetch
-resident_set - keep_set -> candidate eviction
+agent_id
+role
+phase
+tool_type
+graph_node_type
+prompt_block_types
+dependencies
+ready_time
+criticality
 ```
 
-如果prefetch和当前计算可以overlap，收益来自隐藏load latency。
+workload由 `scripts/download_workloads.py` 生成，底层模板在 `tokenmoe/workloads.py` 中定义。当前配置是：
 
-### Agent Scheduling算法
+| 项目 | 当前设置 |
+| --- | --- |
+| workload文件 | `data/workloads/agent_workloads.jsonl` |
+| workflow类型 | 5类 |
+| 每类workflow实例数 | 12 |
+| LLM请求节点总数 | 216 |
+| unique `agent_id` 数 | 60 |
+| role类型数 | 12 |
+| 数据来源 | `synthetic-agent-template` |
 
-```python
-def score_batch(batch, route_sigs):
-    overlap_gain = predicted_expert_overlap(batch, route_sigs)
-    fanout_penalty = predicted_active_expert_fanout(batch, route_sigs)
-    delay_penalty = waiting_time_penalty(batch)
-    length_penalty = sequence_length_imbalance(batch)
+五类workflow分别是：
 
-    return overlap_gain - fanout_penalty - delay_penalty - length_penalty
+| Workflow | 每个实例的节点关系 | 单实例节点数 | 当前请求数 |
+| --- | --- | --- | --- |
+| `planner-coder-tester` | planner -> coder -> tester -> critic | 4 | 48 |
+| `search-summarize` | planner -> searcher -> summarizer | 3 | 36 |
+| `tool-use` | tool_caller/observe -> tool_caller/act -> assistant | 3 | 36 |
+| `multi-agent-discussion` | moderator -> analyst A/B -> merger | 4 | 48 |
+| `swe-agent-code-repair` | tester/reproduce -> debugger -> coder -> tester/regress | 4 | 48 |
+
+role分布如下：
+
+| Role | 请求数 |
+| --- | ---: |
+| tester | 36 |
+| planner | 24 |
+| coder | 24 |
+| tool_caller | 24 |
+| analyst | 24 |
+| critic | 12 |
+| searcher | 12 |
+| summarizer | 12 |
+| assistant | 12 |
+| moderator | 12 |
+| merger | 12 |
+| debugger | 12 |
+
+依赖关系分布为：60个root节点没有依赖，144个节点有1个依赖，12个join节点有2个依赖。调度replay只允许在依赖满足的ready set内部重排，因此不会改变Agent图语义。
+
+### MoE trace采集配置
+
+当前MoE实验使用小型真实MoE模型做router trace characterization：
+
+这80条trace来自workload前两个workflow的一部分：
+
+| Workflow | Trace数 | Role覆盖 |
+| --- | ---: | --- |
+| `planner-coder-tester` | 48 | planner、coder、tester、critic |
+| `search-summarize` | 32 | planner、searcher、summarizer |
+
+采集流程是：
+
+```
+1. 读取Agent workload JSONL
+2. 对每条请求执行Tiny Mixtral前向
+3. 打开output_router_logits
+4. 对每个MoE层的router logits做softmax
+5. 取top-k expert id和score
+6. 写入TraceRecord
+7. 生成JSONL和Parquet两种trace格式
 ```
 
-调度器只在ready nodes之间选择，不违反Agent图依赖。
+每条 `TraceRecord` 保存：
 
 ```
-candidate_batches = build_candidate_batches(ready_nodes)
-batch = argmax(score_batch(candidate_batches))
+request_id
+AgentNodeMeta
+model_id
+backend
+prompt
+prompt_token_count
+output_token_count
+per-layer selected_experts[token, top_k]
+per-layer router_scores[token, top_k]
+per-layer active_expert_histogram
 ```
 
-### 服务端Replica Placement算法
+因此当前MoE结论不是由手写规则或deterministic fallback生成的，而是来自真实MoE router logits。需要注意的是，Tiny Mixtral规模较小，当前trace数量也不大，所以这些结果应当被解释为“机会验证”和“机制验证”，不是最终生产模型上的性能结论。
 
-```python
-def plan_replicas(future_nodes, route_sigs, current_placement, memory_budget):
-    expert_load = predict_expert_load(future_nodes, route_sigs)
-    device_load = project_to_devices(expert_load, current_placement)
+### RouteSig评估设置
 
-    hot_experts = find_experts_causing_imbalance(expert_load, device_load)
-    replica_plan = greedy_place_replicas(
-        hot_experts,
-        current_placement,
-        memory_budget,
-        migration_cost=True,
-    )
-    return replica_plan
+RouteSig评估采用时间顺序切分：
+
+```
+train_fraction = 0.7
+前70% trace用于初始化predictor
+后30% trace用于在线评估
+评估过程中每处理一条eval trace后，再用真实router结果更新predictor
 ```
 
-目标不是复制所有hot experts，而是复制会造成tail latency的experts。
+比较的predictor包括：
+
+| Predictor | 信号 |
+| --- | --- |
+| `global_frequency` | 每层全局热门expert |
+| `request_lru` | 最近请求访问过的expert |
+| `sequence_history` | agent_id或role级历史统计 |
+| `routesig` | 分层Agent metadata signature |
+
+RouteSig使用的fallback key顺序是：
+
+```
+(agent_id, role, phase, block_type)
+  -> (role, phase, block_type)
+  -> (role, phase)
+  -> (role)
+  -> global
+```
+
+核心指标是Top-M hit rate，即预测出的top-M专家集合覆盖真实router top-k专家标签的比例。因为Tiny Mixtral每个token每层选择top-2 experts，所以每个token-layer会产生2个expert labels。Top-M越大，覆盖率自然越高，但prefetch成本也越高。因此当前最有解释价值的是top-4，而不是top-6。
+
+### Agent-Router locality结论
+
+当前结果说明Agent metadata确实包含router之前可见的expert locality信号：
+
+![Role-conditioned expert distribution](analysis/figures/role_expert_heatmap.png)
+
+| 指标 | 数值 | 含义 |
+| --- | ---: | --- |
+| Cross-agent JSD | 0.1245 | 不同role/phase的expert分布存在差异 |
+| Mean route entropy | 1.5060 | expert分布不是完全均匀随机 |
+| Mean cross-group Jaccard | 0.8788 | 不同group共享一部分experts，但仍存在可利用偏差 |
+
+这组结果支持TokenMoE的基础假设：
+
+> Agent节点的role、phase、tool type和prompt block layout可以在router执行前提供弱但稳定的expert working set提示。
+
+### Top-M预测结果
+
+当前Top-M hit rate如下：
+
+![RouteSig top-M hit rate](analysis/figures/topm_hit_rate.png)
+
+| Predictor | Top-2 | Top-4 | Top-6 |
+| --- | ---: | ---: | ---: |
+| Global frequency | 42.1% | 77.4% | 95.7% |
+| Request LRU | 20.9% | 62.2% | 95.8% |
+| Sequence history | 64.3% | 87.9% | 97.6% |
+| RouteSig | 60.6% | 86.1% | 96.9% |
+
+主要结论是：
+
+- Top-4下，RouteSig达到86.1% expert-label hit rate，比global frequency高8.7个百分点。
+- Top-6下，所有方法都接近饱和，因此Top-6不应被作为主要收益证据。
+- Sequence history在这批小trace上略高于RouteSig，说明agent_id和role历史本身很强；RouteSig的价值在于它保留了更明确的系统解释和分层fallback结构，更适合做serving runtime里的安全策略。
+- Request LRU在Top-2和Top-4下较弱，说明简单最近访问不一定适合Agent phase切换。
+
+因此，当前最稳妥的表述是：
+
+> RouteSig显著优于全局热门专家基线，接近强history baseline，并且提供了可解释、可fallback、可接入系统策略的expert working set摘要。
+
+### Layer sensitivity结论
+
+Layer sensitivity显示RouteSig收益并不均匀：
+
+![Layer sensitivity](analysis/figures/layer_sensitivity.png)
+
+| MoE层 | Global Top-4 | RouteSig Top-4 | 提升 |
+| --- | ---: | ---: | ---: |
+| Layer 0 | 82.3% | 86.3% | +4.0 points |
+| Layer 1 | 72.5% | 86.0% | +13.5 points |
+
+这说明TokenMoE不应该无差别地对所有MoE层启用同样策略。更合理的runtime策略是：
+
+```
+高delta、高confidence层 -> 启用RouteSig prefetch / placement signal
+低delta、低confidence层 -> 保持baseline路径
+```
+
+Layer 1的提升更大，说明某些MoE层更受Agent metadata影响；这些层应当是后续vLLM runtime集成的优先目标。
+
+### Prefetch replay结论
+
+Prefetch replay使用RouteSig top-4作为预测working set，结果为：
+
+![Replay simulator summary](analysis/figures/simulator_summary.png)
+
+| 指标 | 数值 |
+| --- | ---: |
+| Prefetch hit rate | 86.1% |
+| Wasted prefetch rate | 2.1% |
+| Fallback/global hit rate | 77.4% |
+| Bandwidth units | 192 |
+| Estimated stall reduction proxy | 160.36 ms |
+
+解释：
+
+- 86.1%的真实expert labels被RouteSig top-4覆盖，说明预取候选集合质量较高。
+- 2.1%的wasted prefetch rate说明额外带宽浪费较低。
+- 相比global frequency的77.4%，RouteSig的预取集合更贴近当前Agent节点。
+
+这个结论可以支持“TokenMoE适合做expert prefetch signal”，但不能写成真实端到端加速。当前还没有把prefetch hook接入vLLM MoE weight manager或offload runtime。
+
+### Scheduling replay结论
+
+调度replay比较FIFO和expert-overlap-aware batching。当前结果是：
+
+| 指标 | Baseline | TokenMoE replay |
+| --- | ---: | ---: |
+| Mean active expert fanout | 13.48 | 14.24 |
+| Mean tokens per expert | 29.60 | 28.10 |
+| Batches | 21 | 21 |
+| Dependency violations | 0 | 0 |
+
+这个结果需要保守解释。当前简单的expert-overlap调度没有降低active expert fanout，反而略高；这说明调度打分函数还不足以稳定改善batch expert shape。正面结论是：调度器保持了依赖正确性，没有违反Agent graph。
+
+因此当前调度相关结论应写为：
+
+> Agent依赖约束下的MoE-aware scheduling可以安全replay，但当前简单策略尚未证明fanout收益。后续需要更强的batch scoring、等待时间约束和更大规模workload验证。
+
+这也避免把未充分成立的调度结果包装成确定收益。
+
+### EPLB replay结论
+
+EPLB replay比较moving-average demand和TokenMoE future-demand proxy：
+
+| 指标 | Moving average | TokenMoE replay | 变化 |
+| --- | ---: | ---: | ---: |
+| p95 tail load proxy | 584.96 | 546.43 | -6.6% |
+| p99 tail load proxy | 611.39 | 563.65 | -7.8% |
+| Accepted moves | - | 21 | - |
+| Rejected moves | - | 15 | - |
+
+解释：
+
+- Moving-average EPLB只看过去窗口，属于reactive策略。
+- TokenMoE replay用未来Agent节点的expert demand proxy，能提前识别即将变热的experts。
+- Tail load proxy下降说明Agent-conditioned demand有可能帮助服务端expert replica placement。
+
+同样，这里是replay结果，不是生产vLLM EPLB改造后的真实tail latency。
+
+### 当前MoE结论总结
+
+当前MoE相关结论可以概括为四点：
+
+1. Agent-Router locality存在：Agent metadata和真实MoE expert分布之间有可测量关系。
+2. RouteSig在Top-4下明显优于global frequency，说明它能提供比全局热门专家更具体的working set预测。
+3. Prefetch和EPLB replay显示系统优化机会，尤其是expert prefetch hit rate和tail load proxy。
+4. Scheduling replay还没有形成明确收益，只能说明依赖安全和机制可行，不能作为当前性能贡献主张。
+
+因此，当前论文和报告中应保持一致表述：
+
+> TokenMoE当前已经验证了Agent-conditioned MoE expert prediction的机会和replay层面的系统潜力；真实runtime收益还需要在大MoE模型和vLLM MoE执行路径中进一步集成和验证。
 
 ## 实验计划
 

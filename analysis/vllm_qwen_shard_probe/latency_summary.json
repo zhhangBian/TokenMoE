@@ -1,0 +1,28 @@
+[
+  {
+    "mode":"baseline",
+    "batch_size":2,
+    "requests":8,
+    "mean_latency_ms":62.5631933799,
+    "p50_latency_ms":62.3113104375,
+    "p95_latency_ms":69.5347993169,
+    "mean_sidecar_us":0.0,
+    "output_tokens":64,
+    "total_batch_ms":1001.0110940784,
+    "throughput_req_s":7.9919194176,
+    "throughput_output_tok_s":63.9353553408
+  },
+  {
+    "mode":"tokenmoe_sidecar",
+    "batch_size":2,
+    "requests":8,
+    "mean_latency_ms":60.7103849179,
+    "p50_latency_ms":62.16301315,
+    "p95_latency_ms":68.4426415246,
+    "mean_sidecar_us":42.2064913437,
+    "output_tokens":64,
+    "total_batch_ms":971.3661586866,
+    "throughput_req_s":8.2358232562,
+    "throughput_output_tok_s":65.8865860496
+  }
+]

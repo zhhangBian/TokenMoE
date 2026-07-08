@@ -1,0 +1,50 @@
+{
+  "model": "/home/youwei/bzh/model/Qwen/Qwen2.5-7B-Instruct",
+  "workload": "/home/youwei/bzh/project/TokenMoE/data/workloads/agent_workloads.jsonl",
+  "offset": 0,
+  "limit": 96,
+  "workload_total": 216,
+  "batch_sizes": [
+    2
+  ],
+  "modes": [
+    "tokenmoe_sidecar"
+  ],
+  "max_tokens": 32,
+  "dtype": "bfloat16",
+  "max_model_len": 2048,
+  "gpu_memory_utilization": 0.82,
+  "cuda_visible_devices": "0",
+  "vllm_version": "0.8.5.post1",
+  "vllm_file": "/home/youwei/anaconda3/envs/tokenmoe/lib/python3.10/site-packages/vllm/__init__.py",
+  "capability": {
+    "model_type": "qwen2",
+    "architectures": [
+      "Qwen2ForCausalLM"
+    ],
+    "is_moe": false,
+    "moe_fields": {},
+    "supports_routed_expert_capture": false,
+    "fallback_reason": "dense_model_no_moe_router"
+  },
+  "time_start": "2026-07-02T04:41:18+0800",
+  "latency_summary": [
+    {
+      "mode": "tokenmoe_sidecar",
+      "batch_size": 2,
+      "requests": 96,
+      "mean_latency_ms": 182.76575774264833,
+      "median_latency_ms": 182.92775936424732,
+      "p95_latency_ms": 187.6722879242152,
+      "throughput_req_s": 5.471484441894721,
+      "throughput_output_tok_s": 175.08750214063107,
+      "mean_sidecar_us": 64.49105179247756
+    }
+  ],
+  "records_written": {
+    "generations": "/home/youwei/bzh/project/TokenMoE/data/vllm_qwen/generations.jsonl",
+    "sidecar_decisions": "/home/youwei/bzh/project/TokenMoE/data/vllm_qwen/sidecar_decisions.jsonl",
+    "latency_csv": "/home/youwei/bzh/project/TokenMoE/data/vllm_qwen/latency.csv"
+  },
+  "time_end": "2026-07-02T04:42:35+0800"
+}
