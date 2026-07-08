@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+logs/
+
+# Common local scratch directories.
+archieve/
+archive/
