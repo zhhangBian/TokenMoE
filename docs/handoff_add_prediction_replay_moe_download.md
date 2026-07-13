@@ -15,8 +15,10 @@ research work should continue.
 
 ## TL;DR
 
-This stage is complete. OpenSpec reports `65/65` tasks complete and
-`add-prediction-replay-moe-download` is ready to archive.
+This stage is complete and archived. OpenSpec reported `65/65` tasks complete
+before archival, the delta specs have been synchronized into the main specs,
+and `add-prediction-replay-moe-download` has been moved under
+`openspec/changes/archive/2026-07-13-add-prediction-replay-moe-download/`.
 
 The current-stage goal was not online acceleration. The goal was to build a
 real evidence loop:
@@ -79,10 +81,10 @@ support a strong systems optimization claim.
 
 ## OpenSpec State
 
-Change directory:
+Archived change directory:
 
 ```text
-openspec/changes/add-prediction-replay-moe-download/
+openspec/changes/archive/2026-07-13-add-prediction-replay-moe-download/
 ```
 
 Important files:
@@ -94,29 +96,58 @@ Important files:
 - `specs/tokenmoe-evaluation-resources/spec.md`
 - `specs/tokenmoe-system-optimization/spec.md`
 
-Status command:
+Active change status:
 
 ```bash
-openspec instructions apply --change add-prediction-replay-moe-download --json
+openspec list --json
 ```
 
-Expected state:
+Expected result after archive:
 
 ```text
-progress: 65/65
-state: all_done
+{"changes":[]}
 ```
 
-Validation command:
+Main spec validation command:
 
 ```bash
-openspec validate add-prediction-replay-moe-download --strict
+openspec validate --specs --strict
 ```
 
 Expected result:
 
 ```text
-Change 'add-prediction-replay-moe-download' is valid
+✓ spec/tokenmoe-evaluation-resources
+✓ spec/tokenmoe-route-signature
+✓ spec/tokenmoe-system-optimization
+✓ spec/tokenmoe-tracing
+Totals: 4 passed, 0 failed (4 items)
+```
+
+Archived-change validation before moving:
+
+```text
+openspec validate add-prediction-replay-moe-download --strict
+  Change 'add-prediction-replay-moe-download' is valid
+```
+
+Sync/archive note:
+
+- `openspec archive -y add-prediction-replay-moe-download` attempted to update
+  specs but aborted because the old main specs did not contain one of the
+  delta's `MODIFIED` requirement headers:
+  `Predictor-facing expert-set output`.
+- The CLI reported that no files were changed.
+- The three main specs were then manually synchronized to the completed change
+  semantics:
+  - `openspec/specs/tokenmoe-evaluation-resources/spec.md`
+  - `openspec/specs/tokenmoe-route-signature/spec.md`
+  - `openspec/specs/tokenmoe-system-optimization/spec.md`
+- After `openspec validate --specs --strict` passed, the change was archived
+  with:
+
+```bash
+openspec archive -y --skip-specs add-prediction-replay-moe-download
 ```
 
 Mixtral note:
@@ -806,16 +837,28 @@ Expected result from this run:
 12 passed
 ```
 
-OpenSpec validation:
+OpenSpec spec validation after archive:
 
 ```bash
-openspec validate add-prediction-replay-moe-download --strict
+openspec validate --specs --strict
 ```
 
 Expected:
 
 ```text
-Change 'add-prediction-replay-moe-download' is valid
+4 specs passed, 0 failed
+```
+
+Active change list after archive:
+
+```bash
+openspec list --json
+```
+
+Expected:
+
+```text
+{"changes":[]}
 ```
 
 Whitespace check:
@@ -1108,14 +1151,6 @@ Runtime integration adds complexity and should consume a validated signal.
 
 ## Suggested Next Commands
 
-If the goal is archival:
-
-```bash
-openspec validate add-prediction-replay-moe-download --strict
-```
-
-Then archive with the appropriate OpenSpec archive command.
-
 If the goal is next research iteration:
 
 1. Create a new OpenSpec change for stronger predictor and SWE metadata.
@@ -1159,10 +1194,13 @@ logs/experiments/20260713_real_vllm_validation_summary.md
 OpenSpec files:
 
 ```text
-openspec/changes/add-prediction-replay-moe-download/proposal.md
-openspec/changes/add-prediction-replay-moe-download/design.md
-openspec/changes/add-prediction-replay-moe-download/tasks.md
-openspec/changes/add-prediction-replay-moe-download/specs/
+openspec/changes/archive/2026-07-13-add-prediction-replay-moe-download/proposal.md
+openspec/changes/archive/2026-07-13-add-prediction-replay-moe-download/design.md
+openspec/changes/archive/2026-07-13-add-prediction-replay-moe-download/tasks.md
+openspec/changes/archive/2026-07-13-add-prediction-replay-moe-download/specs/
+openspec/specs/tokenmoe-evaluation-resources/spec.md
+openspec/specs/tokenmoe-route-signature/spec.md
+openspec/specs/tokenmoe-system-optimization/spec.md
 ```
 
 ## Final Verification Snapshot
@@ -1173,8 +1211,11 @@ Last verified in this handoff state:
 PYTHONPATH=. pytest -q tests
   12 passed
 
-openspec validate add-prediction-replay-moe-download --strict
-  Change 'add-prediction-replay-moe-download' is valid
+openspec validate --specs --strict
+  4 specs passed, 0 failed
+
+openspec list --json
+  {"changes":[]}
 
 git diff --check
   no output
@@ -1183,5 +1224,9 @@ real artifact validation
   passed for 7 dataset/model pairs
 ```
 
-The repo worktree was not clean at the time of this document; implementation
-changes were present but not committed.
+Git state note:
+
+- Implementation commit before archival:
+  `264acd5 Implement real vLLM MoE prediction replay`
+- Archive/spec-sync changes are separate from that implementation commit unless
+  a later commit records them.
