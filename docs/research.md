@@ -56,21 +56,23 @@ confidence falls back to baseline behavior.
 | DeepEP | Efficient all-to-all kernels | Expert-parallel communication | TokenMoE can reduce fanout/burstiness before dispatch, but does not replace DeepEP. |
 | SGLang MoE | Serving runtime MoE/EP paths | Runtime scheduling/dispatch | TokenMoE prototype remains vLLM-oriented while preserving simulator fallback. |
 
-## Real vs Simulator Scope
+## Current vs Next Stage
 
 Real in this prototype:
 
 - Workload records with required `AgentNodeMeta` fields.
-- Tiny Mixtral router-logit tracing through Transformers.
-- vLLM-compatible `routed_experts` ingestion path.
+- External prompt workloads with typed prompt block spans.
+- vLLM `enable_return_routed_experts=True` prompt-only routed expert capture.
 - JSONL and parquet-compatible trace persistence.
-- RouteSig online update and predictor evaluation.
+- Segment-aware RouteSig and simple baseline online prediction evaluation.
+- Offline prediction-based scheduler replay.
 
-Simulator/replay in this prototype:
+Excluded from current-stage validation:
 
+- Transformers router-logit tracing as an active experiment path.
 - Expert prefetch/residency hit, waste, bandwidth, and stall-reduction proxy.
-- Expert-overlap-aware scheduler replay over legal ready nodes.
-- Proactive EPLB replay comparing moving-average demand with future demand.
+- Proactive EPLB replay or replica placement.
+- Online vLLM scheduler reordering.
 
 Deferred runtime integration:
 
@@ -78,4 +80,5 @@ Deferred runtime integration:
 - Real expert-weight offload/prefetch hooks.
 - EPLB policy modification and migration scheduling.
 - Router score capture inside fused vLLM kernels. The prototype captures scores
-  from Transformers router logits and keeps vLLM score capture optional.
+  only when a future vLLM path exposes them; current vLLM routed-experts traces
+  provide selected expert IDs.

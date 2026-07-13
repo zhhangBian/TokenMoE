@@ -1,73 +1,92 @@
 # TokenMoE Trace Format
 
-Trace files are JSONL: one JSON object per request. They are also convertible to
-parquet-compatible one-row-per-request-layer records.
+Current-stage trace files are JSONL with `schema_version =
+"tokenmoe.trace.v2"`. v1 readers remain for compatibility, but analysis rejects
+mixed v1/v2 inputs and rejects v1 for current-stage validation.
 
 ## Request Record
 
 ```json
 {
-  "schema_version": "tokenmoe.trace.v1",
-  "request_id": "planner-coder-tester-000-plan",
+  "schema_version": "tokenmoe.trace.v2",
+  "request_id": "sharegpt-000001",
   "metadata": {
-    "request_id": "planner-coder-tester-000-plan",
-    "agent_id": "planner-coder-tester:planner:0",
-    "role": "planner",
-    "phase": "plan",
+    "request_id": "sharegpt-000001",
+    "agent_id": "sharegpt-chat:assistant:conv-1",
+    "role": "assistant",
+    "phase": "chat",
     "tool_type": null,
-    "graph_node_type": "root",
-    "prompt_block_types": ["system", "instruction", "shared_context"]
+    "graph_node_type": "conversation",
+    "prompt_block_types": ["system", "user_message", "assistant_message"]
   },
-  "model_id": "TitanML/tiny-mixtral",
-  "backend": "transformers-router-logits",
-  "prompt": "You are the planner...",
-  "prompt_token_count": 27,
-  "output_token_count": 0,
-  "token_ids": [1, 887, 460],
-  "generated_token_ids": null,
+  "model_id": "/home/youwei/bzh/model/Qwen/Qwen3-30B-A3B",
+  "backend": "vllm-routed-experts",
+  "routing_scope": "prompt_only",
+  "backend_fallback_used": false,
+  "prompt_routing_start": 0,
+  "decode_routing_excluded": true,
+  "prompt_token_count": 128,
+  "output_token_count": 1,
+  "moe_layer_ids": [0, 1, 2],
+  "router_top_k": 8,
+  "num_experts": 128,
+  "prompt_segments": [],
   "layers": []
 }
 ```
 
+## Prompt Segments
+
+Adapters write character spans. The collector maps them to token spans with the
+same tokenizer path used by vLLM and compares token IDs with
+`RequestOutput.prompt_token_ids`.
+
+```json
+{
+  "segment_id": "instruction-001",
+  "block_type": "instruction",
+  "segment_position": 1,
+  "char_start": 17,
+  "char_end": 82,
+  "token_start": 4,
+  "token_end": 23,
+  "alignment_status": "aligned",
+  "alignment_error": null
+}
+```
+
+If alignment fails, segment-level metrics are unavailable for that record
+instead of silently treating the block as aligned.
+
 ## Layer Record
 
-Each layer entry stores selected expert IDs for every token:
+Each layer stores only MoE layers listed in `moe_layer_ids`:
 
 ```json
 {
   "layer_id": 0,
-  "selected_experts": [[7, 1], [2, 5], [2, 5]],
-  "router_scores": [[0.1392, 0.1296], [0.1461, 0.1287], [0.1520, 0.1200]],
-  "active_expert_histogram": {"1": 1, "2": 2, "5": 2, "7": 1}
+  "selected_experts": [[7, 1], [2, 5]],
+  "router_scores": null,
+  "active_expert_histogram": {"1": 1, "2": 1, "5": 1, "7": 1}
 }
 ```
 
 Shapes:
 
-- `selected_experts`: `[num_tokens, top_k]`
-- `router_scores`: `[num_tokens, top_k]`, optional and aligned with
-  `selected_experts`
-- full request array from vLLM: `[num_tokens, num_layers, top_k]`
+- `selected_experts`: `[prompt_tokens, router_top_k]`
+- full vLLM capture before filtering: `[tokens, hidden_layers, router_top_k]`
 
-## vLLM Compatibility
+Dense/non-MoE layer slots are filtered or marked unavailable. They must never
+be interpreted as expert `0` activity.
 
-vLLM returns `CompletionOutput.routed_experts` when
-`enable_return_routed_experts=True`. That array is `[seq_len, layer_num, top_k]`
-and contains logical expert IDs captured before EPLB physical replica mapping.
-`scripts/collect_traces.py --backend vllm` consumes that array directly in
-environments with a complete vLLM install.
+## Validation
 
-## Parquet-Compatible Rows
+`scripts/analyze_traces.py` rejects:
 
-The parquet writer stores one row per `(request_id, layer_id)` with JSON strings
-for nested fields:
-
-- `request_id`, `model_id`, `backend`
-- `agent_id`, `workflow_role`, `workflow_phase`, `graph_node_type`
-- `prompt_block_types`, `metadata_json`
-- `layer_id`, `token_count`, `top_k`
-- `selected_experts_json`, `router_scores_json`,
-  `active_expert_histogram_json`
-
-This layout works with pyarrow and pandas while preserving the original nested
-JSONL trace as the source of truth.
+- non-`vllm-routed-experts` backends
+- fallback traces
+- mixed schema versions
+- non-prompt-only routing
+- missing `moe_layer_ids`
+- layer IDs not present in `moe_layer_ids`
+- segment token spans that extend beyond prompt token count

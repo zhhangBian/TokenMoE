@@ -28,15 +28,20 @@ def main() -> None:
         report_dir=args.report_dir,
     )
     print(f"records: {len(traces)}")
-    best_routesig = max(
+    prediction_rows = metrics["prediction"].get("results", [])
+    routesig_2x = next(
         (
             row
-            for row in metrics["locality"]["top_m_hit_rate"]
-            if row["predictor"] == "routesig"
+            for row in prediction_rows
+            if row["predictor"] == "routesig" and row["budget"] == "2x"
         ),
-        key=lambda row: row["hit_rate"],
+        None,
     )
-    print(f"best routesig hit_rate: {best_routesig['hit_rate']:.4f}")
+    if routesig_2x:
+        print(
+            "routesig 2x expert_label_hit_rate: "
+            f"{routesig_2x['expert_label_hit_rate']:.4f}"
+        )
     print(f"wrote {args.analysis_dir}/locality_report.md")
     print(f"wrote {args.report_dir}/tokenmoe_report.md")
 

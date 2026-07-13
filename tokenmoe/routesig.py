@@ -11,7 +11,11 @@ from typing import Any, Iterable
 import numpy as np
 
 from tokenmoe.schema import AgentNodeMeta
+from tokenmoe.schema import PromptSegment
 from tokenmoe.trace import TraceRecord
+
+
+_LAYER_ARRAY_CACHE: dict[int, dict[int, np.ndarray]] = {}
 
 
 @dataclass
@@ -70,27 +74,68 @@ class RouteSigStore:
             lambda: deque(maxlen=self.stability_window)
         )
         self._num_experts_by_layer: dict[int, int] = {}
+        self._signature_cache: dict[tuple[tuple[str, ...], int], RouteSignature | None] = {}
 
     def update(self, meta: AgentNodeMeta, layer_id: int, selected: np.ndarray) -> None:
+        self._update_keys(meta.fallback_keys(), layer_id, selected)
+
+    def update_segment(
+        self,
+        meta: AgentNodeMeta,
+        segment: PromptSegment,
+        layer_id: int,
+        selected: np.ndarray,
+    ) -> None:
+        self._update_keys(
+            meta.segment_fallback_keys(segment.block_type, segment.segment_position),
+            layer_id,
+            selected,
+        )
+
+    def _update_keys(
+        self,
+        keys: Iterable[tuple[str, ...]],
+        layer_id: int,
+        selected: np.ndarray,
+    ) -> None:
         selected_arr = np.asarray(selected)
         if selected_arr.size == 0:
             return
-        flat = [int(item) for item in selected_arr.reshape(-1) if int(item) >= 0]
-        if not flat:
+        flat = selected_arr.reshape(-1)
+        valid = flat[flat >= 0]
+        if valid.size == 0:
             return
-        max_expert = max(flat)
+        experts, counts = np.unique(valid.astype(np.int64, copy=False), return_counts=True)
+        hist = Counter({int(expert): int(count) for expert, count in zip(experts, counts)})
+        max_expert = max(hist)
         self._num_experts_by_layer[layer_id] = max(
             self._num_experts_by_layer.get(layer_id, 0), max_expert + 1
         )
-        active = set(flat)
-        for key in meta.fallback_keys():
+        active = set(hist)
+        for key in keys:
             idx = (key, int(layer_id))
-            self._counts[idx].update(flat)
+            self._counts[idx].update(hist)
             self._recent[idx].append(active)
+        self._signature_cache.clear()
 
     def update_trace(self, record: TraceRecord) -> None:
         for layer in record.layers:
-            self.update(record.metadata, layer.layer_id, layer.selected_array())
+            selected = _selected_array_for_layer(record, layer.layer_id)
+            self.update(record.metadata, layer.layer_id, selected)
+
+    def update_segment_trace(self, record: TraceRecord) -> None:
+        layer_arrays = {
+            layer.layer_id: _selected_array_for_layer(record, layer.layer_id)
+            for layer in record.layers
+        }
+        for segment in record.prompt_segments:
+            if segment.token_start is None or segment.token_end is None:
+                continue
+            for layer in record.layers:
+                selected = layer_arrays[layer.layer_id][
+                    segment.token_start : segment.token_end
+                ]
+                self.update_segment(record.metadata, segment, layer.layer_id, selected)
 
     def update_many(self, records: Iterable[TraceRecord]) -> None:
         for record in records:
@@ -109,9 +154,27 @@ class RouteSigStore:
                 return sig
         return None
 
+    def lookup_segment(
+        self,
+        meta: AgentNodeMeta,
+        segment: PromptSegment,
+        layer_id: int,
+        *,
+        min_confidence: float = 0.0,
+    ) -> RouteSignature | None:
+        for key in meta.segment_fallback_keys(segment.block_type, segment.segment_position):
+            sig = self.signature(key, layer_id)
+            if sig is not None and sig.confidence >= min_confidence:
+                return sig
+        return None
+
     def signature(self, key: tuple[str, ...], layer_id: int) -> RouteSignature | None:
+        cache_key = (key, int(layer_id))
+        if cache_key in self._signature_cache:
+            return self._signature_cache[cache_key]
         counts = self._counts.get((key, int(layer_id)))
         if not counts:
+            self._signature_cache[cache_key] = None
             return None
         total = sum(counts.values())
         probs = {expert: count / total for expert, count in counts.items()}
@@ -128,7 +191,7 @@ class RouteSigStore:
             expert: self.default_miss_cost * (1.0 + (1.0 - prob))
             for expert, prob in probs.items()
         }
-        return RouteSignature(
+        signature = RouteSignature(
             key=key,
             layer_id=int(layer_id),
             expert_prob=probs,
@@ -139,6 +202,8 @@ class RouteSigStore:
             sample_count=int(total),
             updated_at=time.time(),
         )
+        self._signature_cache[cache_key] = signature
+        return signature
 
     def _confidence(
         self,
@@ -175,6 +240,20 @@ class RouteSigStore:
             return []
         return sig.top_experts[: (top_m or self.top_m)]
 
+    def top_experts_for_segment(
+        self,
+        meta: AgentNodeMeta,
+        segment: PromptSegment,
+        layer_id: int,
+        *,
+        top_m: int | None = None,
+        min_confidence: float = 0.0,
+    ) -> list[int]:
+        sig = self.lookup_segment(meta, segment, layer_id, min_confidence=min_confidence)
+        if sig is None:
+            return []
+        return sig.top_experts[: (top_m or self.top_m)]
+
     def signatures(self) -> list[RouteSignature]:
         result: list[RouteSignature] = []
         for key, layer_id in sorted(self._counts):
@@ -194,6 +273,13 @@ class RouteSigStore:
             "signatures": [sig.to_dict() for sig in self.signatures()],
         }
         output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _selected_array_for_layer(record: TraceRecord, layer_id: int) -> np.ndarray:
+    per_record = _LAYER_ARRAY_CACHE.setdefault(id(record), {})
+    if layer_id not in per_record:
+        per_record[layer_id] = record.layer(layer_id).selected_array()
+    return per_record[layer_id]
 
 
 def route_entropy_from_probabilities(probabilities: Iterable[float]) -> float:

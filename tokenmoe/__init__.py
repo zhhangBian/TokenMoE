@@ -1,11 +1,14 @@
-"""TokenMoE trace-first prototype utilities."""
+"""TokenMoE prompt-routed MoE trace and replay utilities."""
 
-from tokenmoe.schema import AgentNodeMeta, WorkloadRecord
+from tokenmoe.prediction import PredictedExpertSet
+from tokenmoe.schema import AgentNodeMeta, PromptSegment, WorkloadRecord
 from tokenmoe.routesig import RouteSigStore, RouteSignature
 from tokenmoe.trace import TraceRecord
 
 __all__ = [
     "AgentNodeMeta",
+    "PredictedExpertSet",
+    "PromptSegment",
     "RouteSigStore",
     "RouteSignature",
     "TraceRecord",

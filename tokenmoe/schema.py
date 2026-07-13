@@ -6,6 +6,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+WORKLOAD_SCHEMA_V1 = "tokenmoe.workload.v1"
+WORKLOAD_SCHEMA_V2 = "tokenmoe.workload.v2"
+
+CLAIM_SCOPE_REAL_AGENT = "real_agent_metadata"
+CLAIM_SCOPE_CHAT = "chat_prompt_only"
+CLAIM_SCOPE_DOMAIN = "domain_instruction"
+CLAIM_SCOPE_SYNTHETIC = "synthetic"
+
 REQUIRED_AGENT_META_FIELDS = (
     "request_id",
     "agent_id",
@@ -82,6 +90,24 @@ class AgentNodeMeta:
             ("global",),
         ]
 
+    def segment_fallback_keys(
+        self, block_type: str, segment_position: int | str | None
+    ) -> list[tuple[str, ...]]:
+        """Return segment-aware RouteSig lookup keys from specific to global."""
+
+        block = str(block_type or self.block_type_key or "unknown")
+        position = str(segment_position if segment_position is not None else "unknown")
+        return [
+            (self.agent_id, self.role, self.phase, block, position),
+            (self.role, self.phase, block, position),
+            (self.role, self.phase, block),
+            (self.role, block),
+            (block,),
+            (self.role, self.phase),
+            (self.role,),
+            ("global",),
+        ]
+
     def group_key(self, level: str) -> str:
         if level == "agent":
             return self.agent_id
@@ -99,6 +125,76 @@ class AgentNodeMeta:
 
 
 @dataclass(frozen=True)
+class PromptSegment:
+    """A semantically typed prompt block with character and optional token span."""
+
+    segment_id: str
+    block_type: str
+    segment_position: int
+    char_start: int
+    char_end: int
+    token_start: int | None = None
+    token_end: int | None = None
+    alignment_status: str = "char_span_only"
+    alignment_error: str | None = None
+    text_sha1: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "PromptSegment":
+        return cls(
+            segment_id=str(data["segment_id"]),
+            block_type=str(data["block_type"]),
+            segment_position=int(data.get("segment_position", 0)),
+            char_start=int(data["char_start"]),
+            char_end=int(data["char_end"]),
+            token_start=None
+            if data.get("token_start") in (None, "", "null")
+            else int(data["token_start"]),
+            token_end=None
+            if data.get("token_end") in (None, "", "null")
+            else int(data["token_end"]),
+            alignment_status=str(data.get("alignment_status", "char_span_only")),
+            alignment_error=None
+            if data.get("alignment_error") in (None, "", "null")
+            else str(data["alignment_error"]),
+            text_sha1=None
+            if data.get("text_sha1") in (None, "", "null")
+            else str(data["text_sha1"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @property
+    def token_count(self) -> int:
+        if self.token_start is None or self.token_end is None:
+            return 0
+        return max(0, self.token_end - self.token_start)
+
+    def validate(self, prompt: str) -> None:
+        if self.char_start < 0 or self.char_end < self.char_start:
+            raise ValueError(f"invalid char span for segment {self.segment_id}")
+        if self.char_end > len(prompt):
+            raise ValueError(f"segment {self.segment_id} extends past prompt length")
+        if (self.token_start is None) != (self.token_end is None):
+            raise ValueError(f"segment {self.segment_id} has a partial token span")
+        if self.token_start is not None and self.token_end is not None:
+            if self.token_start < 0 or self.token_end < self.token_start:
+                raise ValueError(f"invalid token span for segment {self.segment_id}")
+
+
+def default_prompt_segment(prompt: str, block_type: str = "prompt") -> PromptSegment:
+    return PromptSegment(
+        segment_id="prompt-000",
+        block_type=block_type,
+        segment_position=0,
+        char_start=0,
+        char_end=len(prompt),
+        alignment_status="legacy_unsegmented",
+    )
+
+
+@dataclass(frozen=True)
 class WorkloadRecord:
     """One normalized agent request used by trace collection and replay."""
 
@@ -109,6 +205,16 @@ class WorkloadRecord:
     dependencies: list[str] = field(default_factory=list)
     source: str = "synthetic"
     expected_output_tokens: int = 16
+    schema_version: str = WORKLOAD_SCHEMA_V2
+    prompt_segments: list[PromptSegment] = field(default_factory=list)
+    source_dataset: str | None = None
+    source_index: int | str | None = None
+    source_group_id: str | None = None
+    timestamp: str | float | int | None = None
+    claim_scope: str = CLAIM_SCOPE_SYNTHETIC
+    unavailable_fields: list[str] = field(default_factory=list)
+    dag_available: bool = False
+    dependency_edges: list[tuple[str, str]] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "WorkloadRecord":
@@ -120,18 +226,49 @@ class WorkloadRecord:
         dependencies = data.get("dependencies", [])
         if dependencies is None:
             dependencies = []
+        prompt = str(data["prompt"])
+        raw_segments = data.get("prompt_segments", data.get("segments", []))
+        prompt_segments = [
+            PromptSegment.from_mapping(item) for item in raw_segments
+        ]
+        if not prompt_segments:
+            prompt_segments = [default_prompt_segment(prompt, meta.block_type_key)]
+        for segment in prompt_segments:
+            segment.validate(prompt)
+        dependency_edges = []
+        for edge in data.get("dependency_edges", []) or []:
+            if isinstance(edge, dict):
+                dependency_edges.append((str(edge["from"]), str(edge["to"])))
+            else:
+                src, dst = edge
+                dependency_edges.append((str(src), str(dst)))
         return cls(
             request_id=request_id,
             workflow=str(data.get("workflow", "unknown")),
-            prompt=str(data["prompt"]),
+            prompt=prompt,
             meta=meta,
             dependencies=[str(dep) for dep in dependencies],
             source=str(data.get("source", "synthetic")),
             expected_output_tokens=int(data.get("expected_output_tokens", 16)),
+            schema_version=str(data.get("schema_version", WORKLOAD_SCHEMA_V1)),
+            prompt_segments=prompt_segments,
+            source_dataset=None
+            if data.get("source_dataset") in (None, "", "null")
+            else str(data["source_dataset"]),
+            source_index=data.get("source_index"),
+            source_group_id=None
+            if data.get("source_group_id") in (None, "", "null")
+            else str(data["source_group_id"]),
+            timestamp=data.get("timestamp"),
+            claim_scope=str(data.get("claim_scope", CLAIM_SCOPE_SYNTHETIC)),
+            unavailable_fields=[str(item) for item in data.get("unavailable_fields", [])],
+            dag_available=bool(data.get("dag_available", bool(dependencies))),
+            dependency_edges=dependency_edges,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "request_id": self.request_id,
             "workflow": self.workflow,
             "prompt": self.prompt,
@@ -139,6 +276,17 @@ class WorkloadRecord:
             "dependencies": list(self.dependencies),
             "source": self.source,
             "expected_output_tokens": self.expected_output_tokens,
+            "prompt_segments": [segment.to_dict() for segment in self.prompt_segments],
+            "source_dataset": self.source_dataset,
+            "source_index": self.source_index,
+            "source_group_id": self.source_group_id,
+            "timestamp": self.timestamp,
+            "claim_scope": self.claim_scope,
+            "unavailable_fields": list(self.unavailable_fields),
+            "dag_available": self.dag_available,
+            "dependency_edges": [
+                {"from": src, "to": dst} for src, dst in self.dependency_edges
+            ],
         }
 
 

@@ -8,6 +8,15 @@ from typing import Iterable
 import numpy as np
 
 from tokenmoe.metrics import GlobalFrequencyPredictor, split_records
+from tokenmoe.metrics import split_records_by_group
+from tokenmoe.prediction import (
+    OracleSegmentPredictor,
+    RouteSigSegmentPredictor,
+    TemporalWindowSegmentPredictor,
+    predict_record_demand,
+    record_true_demand,
+    selected_array_for_layer,
+)
 from tokenmoe.routesig import RouteSigStore
 from tokenmoe.schema import WorkloadRecord
 from tokenmoe.trace import TraceRecord
@@ -89,14 +98,13 @@ class SchedulerReplayResult:
     tokenmoe_mean_tokens_per_expert: float
     batches: int
     dependency_violations: int
-
-
-def _record_active_experts(record: TraceRecord) -> set[tuple[int, int]]:
-    active: set[tuple[int, int]] = set()
-    for layer in record.layers:
-        for expert in layer.active_expert_histogram:
-            active.add((layer.layer_id, int(expert)))
-    return active
+    replay_kind: str = "unknown"
+    dag_scheduling_available: bool = False
+    policy_results: dict[str, dict[str, float | int | str]] = None  # type: ignore[assignment]
+    low_confidence_gated_fraction: float = 0.0
+    missing_span_fraction: float = 0.0
+    unavailable_layer_fraction: float = 0.0
+    unavailable_metric_fraction: float = 0.0
 
 
 def _batch_stats(batch: list[TraceRecord]) -> tuple[int, float]:
@@ -104,75 +112,210 @@ def _batch_stats(batch: list[TraceRecord]) -> tuple[int, float]:
     token_counts: Counter[tuple[int, int]] = Counter()
     for record in batch:
         for layer in record.layers:
-            selected = layer.selected_array()
-            active.update((layer.layer_id, int(expert)) for expert in selected.reshape(-1))
-            token_counts.update((layer.layer_id, int(expert)) for expert in selected.reshape(-1))
+            selected = selected_array_for_layer(record, layer.layer_id)
+            valid = selected.reshape(-1)
+            valid = valid[valid >= 0]
+            if valid.size == 0:
+                continue
+            experts, counts = np.unique(
+                valid.astype(np.int64, copy=False),
+                return_counts=True,
+            )
+            active.update((layer.layer_id, int(expert)) for expert in experts)
+            token_counts.update(
+                {
+                    (layer.layer_id, int(expert)): int(count)
+                    for expert, count in zip(experts, counts)
+                }
+            )
     fanout = len(active)
     mean_tokens = float(np.mean(list(token_counts.values()))) if token_counts else 0.0
     return fanout, mean_tokens
 
 
-def _fifo_schedule(
-    records: list[TraceRecord], workload_by_id: dict[str, WorkloadRecord], batch_size: int
-) -> list[list[TraceRecord]]:
-    pending = {record.request_id: record for record in records}
+def _dependencies_satisfied(
+    record: TraceRecord,
+    workload_by_id: dict[str, WorkloadRecord],
+    pending: dict[str, TraceRecord],
+    done: set[str],
+) -> bool:
+    workload = workload_by_id.get(record.request_id)
+    dependencies = workload.dependencies if workload is not None else []
+    return all(dep in done or dep not in pending for dep in dependencies)
+
+
+def _ready_records(
+    pending: dict[str, TraceRecord],
+    workload_by_id: dict[str, WorkloadRecord],
+    done: set[str],
+    step: int,
+) -> list[TraceRecord]:
+    ready = [
+        record
+        for record in pending.values()
+        if _dependencies_satisfied(record, workload_by_id, pending, done)
+        and record.metadata.ready_time <= step
+    ]
+    if ready:
+        return sorted(ready, key=lambda r: (r.metadata.ready_time, r.request_id))
+    future = [
+        record
+        for record in pending.values()
+        if _dependencies_satisfied(record, workload_by_id, pending, done)
+    ]
+    return sorted(future, key=lambda r: (r.metadata.ready_time, r.request_id))
+
+
+def _dependency_violations(
+    batches: list[list[TraceRecord]], workload_by_id: dict[str, WorkloadRecord]
+) -> int:
     done: set[str] = set()
+    scheduled_ids = {record.request_id for batch in batches for record in batch}
+    violations = 0
+    for batch in batches:
+        for record in batch:
+            workload = workload_by_id.get(record.request_id)
+            for dep in workload.dependencies if workload is not None else []:
+                if dep in scheduled_ids and dep not in done:
+                    violations += 1
+        for record in batch:
+            done.add(record.request_id)
+    return violations
+
+
+def _candidate_cost(
+    demand: dict[tuple[int, int], float],
+    *,
+    waiting_steps: float,
+    mean_confidence: float,
+    confidence_threshold: float,
+) -> tuple[float, float, float, float]:
+    active = [value for value in demand.values() if value > 0]
+    fanout_cost = float(len(active))
+    low_density_cost = float(sum(1.0 / max(value, 1.0) for value in active))
+    waiting_cost = max(0.0, waiting_steps) * 0.05
+    confidence_penalty = 2.0 if mean_confidence < confidence_threshold else 0.0
+    return fanout_cost, low_density_cost, waiting_cost, confidence_penalty
+
+
+def _run_policy(
+    *,
+    policy_name: str,
+    records: list[TraceRecord],
+    workload_by_id: dict[str, WorkloadRecord],
+    batch_size: int,
+    predictor,
+    top_m: int,
+    router_top_k: int,
+    confidence_threshold: float,
+    max_delay_steps: int,
+) -> tuple[list[list[TraceRecord]], dict[str, float | int | str]]:
+    pending = {record.request_id: record for record in records}
+    done = {record.request_id for record in records if record.request_id not in pending}
     batches: list[list[TraceRecord]] = []
+    low_confidence = 0
+    prediction_ops = 0
+    step = 0
     while pending:
-        ready = [
-            record
-            for record in pending.values()
-            if all(dep in done for dep in workload_by_id.get(record.request_id, None).dependencies)
-        ]
+        ready = _ready_records(pending, workload_by_id, done, step)
         if not ready:
-            ready = list(pending.values())
-        ready.sort(key=lambda r: (r.metadata.ready_time, r.request_id))
-        batch = ready[:batch_size]
+            break
+        batch: list[TraceRecord] = []
+        if policy_name == "fifo":
+            batch = ready[:batch_size]
+        else:
+            candidates = list(ready)
+            demand_cache: dict[
+                str, tuple[Counter[tuple[int, int]], list[float]]
+            ] = {}
+            batch_demand: Counter[tuple[int, int]] = Counter()
+            batch_confidences: list[float] = []
+
+            def cached_demand(record: TraceRecord) -> tuple[Counter[tuple[int, int]], list[float]]:
+                cached = demand_cache.get(record.request_id)
+                if cached is not None:
+                    return cached
+                demand, predictions = predict_record_demand(
+                    predictor,
+                    record,
+                    top_m=top_m,
+                    router_top_k=router_top_k,
+                )
+                payload = (
+                    Counter(demand),
+                    [pred.confidence for pred in predictions],
+                )
+                demand_cache[record.request_id] = payload
+                return payload
+
+            while candidates and len(batch) < batch_size:
+                starved = [
+                    record
+                    for record in candidates
+                    if step - record.metadata.ready_time >= max_delay_steps
+                ]
+                if starved:
+                    chosen = sorted(starved, key=lambda r: (r.metadata.ready_time, r.request_id))[0]
+                    batch.append(chosen)
+                    candidates.remove(chosen)
+                    continue
+                best_record = None
+                best_score = None
+                for candidate in candidates:
+                    candidate_demand, candidate_confidences = cached_demand(candidate)
+                    combined_demand = Counter(batch_demand)
+                    combined_demand.update(candidate_demand)
+                    confidences = batch_confidences + candidate_confidences
+                    mean_conf = float(np.mean(confidences)) if confidences else 0.0
+                    prediction_ops += 1
+                    low_confidence += int(mean_conf < confidence_threshold)
+                    score = _candidate_cost(
+                        dict(combined_demand),
+                        waiting_steps=max(0.0, step - candidate.metadata.ready_time),
+                        mean_confidence=mean_conf,
+                        confidence_threshold=confidence_threshold,
+                    )
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best_record = candidate
+                if best_record is None:
+                    break
+                batch.append(best_record)
+                chosen_demand, chosen_confidences = cached_demand(best_record)
+                batch_demand.update(chosen_demand)
+                batch_confidences.extend(chosen_confidences)
+                candidates.remove(best_record)
         batches.append(batch)
         for record in batch:
             pending.pop(record.request_id, None)
             done.add(record.request_id)
-    return batches
-
-
-def _tokenmoe_schedule(
-    records: list[TraceRecord], workload_by_id: dict[str, WorkloadRecord], batch_size: int
-) -> list[list[TraceRecord]]:
-    pending = {record.request_id: record for record in records}
-    done: set[str] = set()
-    batches: list[list[TraceRecord]] = []
-    predicted_active = {record.request_id: _record_active_experts(record) for record in records}
-    while pending:
-        ready = [
-            record
-            for record in pending.values()
-            if all(dep in done for dep in workload_by_id.get(record.request_id, None).dependencies)
-        ]
-        if not ready:
-            ready = list(pending.values())
-        ready.sort(key=lambda r: (r.metadata.ready_time, r.request_id))
-        seed = ready[0]
-        batch = [seed]
-        remaining = ready[1:]
-        while remaining and len(batch) < batch_size:
-            current = set().union(*(predicted_active[item.request_id] for item in batch))
-
-            def score(candidate: TraceRecord) -> tuple[float, float]:
-                cand = predicted_active[candidate.request_id]
-                union = current | cand
-                overlap = len(current & cand) / len(union) if union else 0.0
-                waiting_penalty = max(0.0, candidate.metadata.ready_time - seed.metadata.ready_time) * 0.001
-                fanout_penalty = len(union) * 0.0001
-                return (overlap - waiting_penalty - fanout_penalty, -candidate.metadata.ready_time)
-
-            chosen = max(remaining, key=score)
-            batch.append(chosen)
-            remaining.remove(chosen)
-        batches.append(batch)
-        for record in batch:
-            pending.pop(record.request_id, None)
-            done.add(record.request_id)
-    return batches
+            if predictor is not None and policy_name != "oracle":
+                predictor.update(record)
+        step += 1
+    fanouts = []
+    mean_tokens = []
+    overlaps = []
+    for batch in batches:
+        fanout, tokens = _batch_stats(batch)
+        fanouts.append(fanout)
+        mean_tokens.append(tokens)
+        demands = [set(record_true_demand(record)) for record in batch]
+        if len(demands) > 1:
+            union = set().union(*demands)
+            intersection = set.intersection(*demands) if demands else set()
+            overlaps.append(len(intersection) / len(union) if union else 0.0)
+    return batches, {
+        "policy": policy_name,
+        "batches": len(batches),
+        "actual_mean_fanout": float(np.mean(fanouts)) if fanouts else 0.0,
+        "actual_mean_tokens_per_expert": float(np.mean(mean_tokens)) if mean_tokens else 0.0,
+        "batch_expert_overlap": float(np.mean(overlaps)) if overlaps else 0.0,
+        "dependency_violations": _dependency_violations(batches, workload_by_id),
+        "low_confidence_gated_fraction": low_confidence / prediction_ops if prediction_ops else 0.0,
+        "mean_added_waiting_steps": 0.0,
+        "p95_added_waiting_steps": 0.0,
+        "max_delay": float(max_delay_steps),
+    }
 
 
 def simulate_scheduler_replay(
@@ -180,6 +323,11 @@ def simulate_scheduler_replay(
     workloads: Iterable[WorkloadRecord],
     *,
     batch_size: int = 4,
+    router_top_k: int | None = None,
+    top_m: int | None = None,
+    train_fraction: float = 0.7,
+    confidence_threshold: float = 0.1,
+    max_delay_steps: int = 8,
 ) -> SchedulerReplayResult:
     workload_by_id = {item.request_id: item for item in workloads}
     for record in records:
@@ -193,30 +341,96 @@ def simulate_scheduler_replay(
                 dependencies=[],
             ),
         )
-    baseline_batches = _fifo_schedule(records, workload_by_id, batch_size)
-    tokenmoe_batches = _tokenmoe_schedule(records, workload_by_id, batch_size)
-
-    def summarize(batches: list[list[TraceRecord]]) -> tuple[float, float]:
-        fanouts = []
-        tokens = []
-        for batch in batches:
-            fanout, mean_tokens = _batch_stats(batch)
-            fanouts.append(fanout)
-            tokens.append(mean_tokens)
-        return (
-            float(np.mean(fanouts)) if fanouts else 0.0,
-            float(np.mean(tokens)) if tokens else 0.0,
-        )
-
-    baseline_fanout, baseline_tokens = summarize(baseline_batches)
-    tokenmoe_fanout, tokenmoe_tokens = summarize(tokenmoe_batches)
+    effective_top_k = router_top_k or (records[0].router_top_k if records else None) or (records[0].top_k if records else 1)
+    effective_top_m = top_m or (2 * effective_top_k)
+    train, eval_records, split_info = split_records_by_group(records, train_fraction)
+    if not split_info.get("available"):
+        train, eval_records = split_records(records, train_fraction)
+    dag_available = any(item.dag_available for item in workload_by_id.values())
+    claim_scopes = {record.claim_scope for record in records if record.claim_scope}
+    replay_kind = (
+        "agent_dag"
+        if dag_available and claim_scopes <= {"real_agent_metadata"}
+        else "prompt_or_domain_locality"
+    )
+    temporal = TemporalWindowSegmentPredictor(train, window_size=64)
+    routesig = RouteSigSegmentPredictor(
+        train, top_m=effective_top_m, min_samples=max(4, effective_top_m * 2)
+    )
+    oracle = OracleSegmentPredictor(train)
+    _, fifo_summary = _run_policy(
+        policy_name="fifo",
+        records=eval_records,
+        workload_by_id=workload_by_id,
+        batch_size=batch_size,
+        predictor=None,
+        top_m=effective_top_m,
+        router_top_k=effective_top_k,
+        confidence_threshold=confidence_threshold,
+        max_delay_steps=max_delay_steps,
+    )
+    _, temporal_summary = _run_policy(
+        policy_name="temporal_window_frequency",
+        records=eval_records,
+        workload_by_id=workload_by_id,
+        batch_size=batch_size,
+        predictor=temporal,
+        top_m=effective_top_m,
+        router_top_k=effective_top_k,
+        confidence_threshold=confidence_threshold,
+        max_delay_steps=max_delay_steps,
+    )
+    _, routesig_summary = _run_policy(
+        policy_name="routesig",
+        records=eval_records,
+        workload_by_id=workload_by_id,
+        batch_size=batch_size,
+        predictor=routesig,
+        top_m=effective_top_m,
+        router_top_k=effective_top_k,
+        confidence_threshold=confidence_threshold,
+        max_delay_steps=max_delay_steps,
+    )
+    _, oracle_summary = _run_policy(
+        policy_name="oracle",
+        records=eval_records,
+        workload_by_id=workload_by_id,
+        batch_size=batch_size,
+        predictor=oracle,
+        top_m=effective_top_m,
+        router_top_k=effective_top_k,
+        confidence_threshold=confidence_threshold,
+        max_delay_steps=max_delay_steps,
+    )
+    policy_results = {
+        "fifo": fifo_summary,
+        "temporal_window_frequency": temporal_summary,
+        "routesig": routesig_summary,
+        "oracle_future_demand": oracle_summary,
+    }
+    missing_segments = sum(
+        1
+        for record in eval_records
+        for segment in record.prompt_segments
+        if segment.token_start is None or segment.token_end is None
+    )
+    total_segments = sum(len(record.prompt_segments) for record in eval_records)
+    unavailable_layers = sum(len(record.unavailable_layer_ids) for record in eval_records)
+    total_layers = sum(len(record.moe_layer_ids or []) for record in eval_records)
     return SchedulerReplayResult(
-        baseline_mean_fanout=baseline_fanout,
-        tokenmoe_mean_fanout=tokenmoe_fanout,
-        baseline_mean_tokens_per_expert=baseline_tokens,
-        tokenmoe_mean_tokens_per_expert=tokenmoe_tokens,
-        batches=len(tokenmoe_batches),
-        dependency_violations=0,
+        baseline_mean_fanout=float(fifo_summary["actual_mean_fanout"]),
+        tokenmoe_mean_fanout=float(routesig_summary["actual_mean_fanout"]),
+        baseline_mean_tokens_per_expert=float(fifo_summary["actual_mean_tokens_per_expert"]),
+        tokenmoe_mean_tokens_per_expert=float(routesig_summary["actual_mean_tokens_per_expert"]),
+        batches=int(routesig_summary["batches"]),
+        dependency_violations=int(routesig_summary["dependency_violations"]),
+        replay_kind=replay_kind,
+        dag_scheduling_available=dag_available,
+        policy_results=policy_results,
+        low_confidence_gated_fraction=float(routesig_summary["low_confidence_gated_fraction"]),
+        missing_span_fraction=missing_segments / total_segments if total_segments else 0.0,
+        unavailable_layer_fraction=unavailable_layers / total_layers if total_layers else 0.0,
+        unavailable_metric_fraction=0.0 if eval_records else 1.0,
     )
 
 
@@ -234,7 +448,21 @@ def _window_demand(records: list[TraceRecord]) -> Counter[tuple[int, int]]:
     demand: Counter[tuple[int, int]] = Counter()
     for record in records:
         for layer in record.layers:
-            demand.update((layer.layer_id, int(expert)) for expert in layer.selected_array().reshape(-1))
+            selected = selected_array_for_layer(record, layer.layer_id)
+            valid = selected.reshape(-1)
+            valid = valid[valid >= 0]
+            if valid.size == 0:
+                continue
+            experts, counts = np.unique(
+                valid.astype(np.int64, copy=False),
+                return_counts=True,
+            )
+            demand.update(
+                {
+                    (layer.layer_id, int(expert)): int(count)
+                    for expert, count in zip(experts, counts)
+                }
+            )
     return demand
 
 
@@ -303,7 +531,9 @@ def simulator_summary(
     records: list[TraceRecord], workloads: Iterable[WorkloadRecord]
 ) -> dict[str, object]:
     return {
-        "prefetch": simulate_prefetch(records).__dict__,
         "scheduler": simulate_scheduler_replay(records, workloads).__dict__,
-        "eplb": simulate_eplb_replay(records).__dict__,
+        "archived_excluded": {
+            "prefetch": "excluded_current_stage_next_stage_runtime_integration",
+            "eplb": "excluded_current_stage_next_stage_replica_placement",
+        },
     }

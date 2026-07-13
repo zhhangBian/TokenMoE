@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from tokenmoe.schema import AgentNodeMeta
@@ -27,6 +29,10 @@ class ModelCapability:
     moe_fields: dict[str, Any]
     supports_routed_expert_capture: bool
     fallback_reason: str | None
+    num_hidden_layers: int | None = None
+    moe_layer_ids: list[int] | None = None
+    router_top_k: int | None = None
+    num_experts: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -61,6 +67,14 @@ def infer_model_capability(config: Mapping[str, Any]) -> ModelCapability:
     model_type_says_moe = "moe" in model_type.lower()
     is_moe = bool(moe_fields or architecture_says_moe or model_type_says_moe)
     fallback_reason = None if is_moe else "dense_model_no_moe_router"
+    moe_layer_ids = derive_moe_layer_ids(config) if is_moe else []
+    router_top_k = config.get("num_experts_per_tok", config.get("num_selected_experts"))
+    num_experts = (
+        config.get("num_experts")
+        or config.get("num_local_experts")
+        or config.get("n_routed_experts")
+        or config.get("num_routed_experts")
+    )
     return ModelCapability(
         model_type=model_type,
         architectures=architectures,
@@ -68,7 +82,81 @@ def infer_model_capability(config: Mapping[str, Any]) -> ModelCapability:
         moe_fields=moe_fields,
         supports_routed_expert_capture=is_moe,
         fallback_reason=fallback_reason,
+        num_hidden_layers=None
+        if config.get("num_hidden_layers") in (None, "", "null")
+        else int(config["num_hidden_layers"]),
+        moe_layer_ids=moe_layer_ids,
+        router_top_k=None if router_top_k in (None, "", "null") else int(router_top_k),
+        num_experts=None if num_experts in (None, "", "null") else int(num_experts),
     )
+
+
+def load_hf_config(model_path: str | Path) -> dict[str, Any]:
+    config_path = Path(model_path) / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"model config not found: {config_path}")
+    return json.loads(config_path.read_text(encoding="utf-8"))
+
+
+def derive_moe_layer_ids(config: Mapping[str, Any]) -> list[int]:
+    """Infer MoE layer IDs from common HF MoE config fields."""
+
+    num_layers = config.get("num_hidden_layers")
+    if num_layers in (None, "", "null"):
+        return []
+    total_layers = int(num_layers)
+    mlp_only_layers = {int(item) for item in config.get("mlp_only_layers", []) or []}
+    first_dense = int(config.get("first_k_dense_replace", 0) or 0)
+    moe_freq = int(config.get("moe_layer_freq", config.get("decoder_sparse_step", 1)) or 1)
+    layer_ids = []
+    for layer_id in range(total_layers):
+        if layer_id in mlp_only_layers:
+            continue
+        if layer_id < first_dense:
+            continue
+        if moe_freq > 1 and (layer_id - first_dense) % moe_freq != 0:
+            continue
+        layer_ids.append(layer_id)
+    return layer_ids
+
+
+def validate_vllm_profile(
+    *,
+    capability: ModelCapability,
+    enable_return_routed_experts: bool,
+    pipeline_parallel_size: int,
+    context_parallel_size: int,
+    kv_transfer_enabled: bool,
+    tensor_parallel_size: int | None,
+    enable_expert_parallel: bool | None,
+    dtype: str | None,
+    max_model_len: int | None,
+    gpu_memory_utilization: float | None,
+) -> None:
+    if not capability.is_moe:
+        raise ValueError(capability.fallback_reason or "selected model is not MoE")
+    if not enable_return_routed_experts:
+        raise ValueError("enable_return_routed_experts must be true")
+    if pipeline_parallel_size != 1:
+        raise ValueError("pipeline parallelism must be disabled for routed expert capture")
+    if context_parallel_size != 1:
+        raise ValueError("context parallelism must be disabled for routed expert capture")
+    if kv_transfer_enabled:
+        raise ValueError("KV transfer/connectors must be disabled")
+    if tensor_parallel_size is None:
+        raise ValueError("tensor_parallel_size must be explicit")
+    if enable_expert_parallel is None:
+        raise ValueError("enable_expert_parallel must be explicit")
+    if not dtype:
+        raise ValueError("dtype must be explicit")
+    if max_model_len is None:
+        raise ValueError("max_model_len must be explicit")
+    if gpu_memory_utilization is None:
+        raise ValueError("gpu_memory_utilization must be explicit")
+    if not capability.moe_layer_ids:
+        raise ValueError("could not derive moe_layer_ids from model config")
+    if capability.router_top_k is None:
+        raise ValueError("could not derive router top-k from model config")
 
 
 def metadata_sidecar_decision(

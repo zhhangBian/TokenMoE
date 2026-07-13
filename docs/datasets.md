@@ -1,63 +1,62 @@
-# TokenMoE Models and Workloads
+# TokenMoE External Datasets
 
-## Model Tiers
+## Download
 
-| Tier | Models | Use |
-| --- | --- | --- |
-| Small | `TitanML/tiny-mixtral` | Local real-router experiments; 2 MoE layers, 8 experts, top-2 routing. |
-| Target | `mistralai/Mixtral-8x7B-Instruct-v0.1`, `Qwen/Qwen3-30B-A3B`, `deepseek-ai/DeepSeek-V2-Lite-Chat` | Larger vLLM evaluation when model cache, GPU memory, and full vLLM dependencies are available. |
-| Trace-only | Deterministic schema-compatible trace generation | CI/replay fallback when external model resources are unavailable. |
+Use the existing local script:
 
-Run `MODEL_SET=small DRY_RUN=1 scripts/download_models.sh` to inspect model
-downloads without fetching files.
-
-## Workload Schema
-
-Each JSONL row is a normalized agent request:
-
-```json
-{
-  "request_id": "planner-coder-tester-000-plan",
-  "workflow": "planner-coder-tester",
-  "prompt": "You are the planner...",
-  "meta": {
-    "request_id": "planner-coder-tester-000-plan",
-    "agent_id": "planner-coder-tester:planner:0",
-    "role": "planner",
-    "phase": "plan",
-    "tool_type": null,
-    "graph_node_type": "root",
-    "prompt_block_types": ["system", "instruction", "shared_context"],
-    "ready_time": 0.0,
-    "deadline": null,
-    "run_probability": 1.0,
-    "criticality": 1.2
-  },
-  "dependencies": [],
-  "source": "synthetic-agent-template",
-  "expected_output_tokens": 16
-}
+```bash
+python /home/youwei/bzh/dataset/download_dataset.py
 ```
 
-Required `AgentNodeMeta` fields are `request_id`, `agent_id`, `role`, `phase`,
-`tool_type`, `graph_node_type`, and `prompt_block_types`. `tool_type` may be
-null for non-tool requests.
+Only `DATASET_LIST` is changed by this repository work. It targets:
 
-## Workload Families
+- `anon8231489123/ShareGPT_Vicuna_unfiltered`
+- `lmsys/lmsys-chat-1m`
+- `nebius/SWE-agent-trajectories`
+- `nvidia/OpenCodeInstruct`
+- `nvidia/OpenMathInstruct-2`
 
-| Workflow | Roles | Metadata mapping |
-| --- | --- | --- |
-| planner-coder-tester | planner, coder, tester, critic | `role` from node function; `phase` as plan/act/verify/reflect; `tool_type` python or pytest for tool-backed nodes; `prompt_block_types` includes code context and tool results where applicable. |
-| search-summarize | planner, searcher, summarizer | Search node uses `tool_type=web_search`; summarizer includes `tool_result` and shared context. |
-| tool-use | tool_caller, assistant | Tool nodes use shell/python `tool_type`; final assistant node has no tool. |
-| multi-agent-discussion | moderator, analyst, merger | Parallel analyst nodes depend on moderator; merger depends on both analysts. |
-| SWE-agent/code repair | tester, debugger, coder | Reproduce/localize/patch/regress phases map to observe/reflect/act/verify. |
+If a dataset is gated, the failure remains visible in the download log and the
+dataset is not replaced.
 
-The default generator produces all five workflows and preserves dependencies so
-scheduler replay can enforce legal ready-node choices.
+## Conversion
 
-## External Dataset Fallback
+Converters live in `dataset_adapters/`, outside core `tokenmoe/` runtime code.
+Run all converters:
 
-The prototype does not require external datasets. If future SWE-bench, tool-use,
-or web-agent traces are unavailable, `scripts/download_workloads.py` still
-generates schema-valid synthetic agent records with the same metadata fields.
+```bash
+PYTHONPATH=. python -m dataset_adapters.convert_all --limit 256
+```
+
+Per-dataset outputs:
+
+- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/sharegpt_prompt_workloads.jsonl`
+- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/lmsys_prompt_workloads.jsonl`
+- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/swe_agent_prompt_workloads.jsonl`
+- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/opencode_prompt_workloads.jsonl`
+- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/openmath_prompt_workloads.jsonl`
+
+Manifests are written under
+`/home/youwei/bzh/dataset/tokenmoe_artifacts/manifests/` and record source
+paths, output paths, sample counts, mapping version, command, unavailable
+fields, license/access status, redaction status, claim scope, and DAG
+availability.
+
+## Workload v2
+
+Each JSONL row includes:
+
+- `schema_version = "tokenmoe.workload.v2"`
+- `prompt`
+- `prompt_segments` with `segment_id`, `block_type`, `segment_position`,
+  `char_start`, `char_end`, and alignment status fields
+- `source_dataset`, `source_index`, `source_group_id`, and timestamp when
+  available
+- `claim_scope`: `real_agent_metadata`, `chat_prompt_only`, or
+  `domain_instruction`
+- `dependencies`, `dependency_edges`, `dag_available`, and `meta.ready_time`
+  when reconstructable
+
+Only SWE-agent trajectory workloads can support real agent-DAG scheduler claims.
+ShareGPT/LMSYS support chat prompt locality, and OpenCode/OpenMath support
+domain-instruction locality.
