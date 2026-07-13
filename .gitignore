@@ -7,3 +7,6 @@ logs/
 # Common local scratch directories.
 /archieve/
 /archive/
+
+PLAN.md
+PLAN-REVIEW-LOG.md

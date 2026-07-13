@@ -1,44 +1,88 @@
-## 1. Discuss Implementation Decisions
+## 1. Scope and Artifact Cleanup
 
-- [x] 1.1 Confirm the first MoE model profile for `/home/youwei/bzh/model/download.py`: `moe-target`
-- [x] 1.2 Confirm endpoint and token policy: use `https://hf-mirror.com` and hardcoded local token without logging it
-- [x] 1.3 Confirm the first real MoE run should use vLLM routed expert capture
-- [x] 1.4 Confirm prediction policy: statistical RouteSig decisions plus temporal metrics reporting
+- [x] 1.1 Confirm current-stage success standard: real vLLM prompt-only MoE traces plus block-level prediction and scheduler replay
+- [x] 1.2 Confirm next-stage-only items: online expert prefetch, vLLM scheduler modification, and EPLB replica placement
+- [x] 1.3 Confirm model priority: Qwen3-30B-A3B primary, DeepSeek-V2-Lite cross-model validation, Mixtral optional compatibility
+- [x] 1.4 Confirm dataset download constraint: only edit `DATASET_LIST` in `/home/youwei/bzh/dataset/download_dataset.py`
+- [x] 1.5 Confirm prompt trace scope: prompt tokens only, with minimal vLLM generation only to trigger outputs
+- [x] 1.6 Confirm prefetch replay and EPLB replay are moved out of this change
+- [x] 1.7 Confirm scheduler replay agent-DAG claims require dependency edges and ready times
 
-## 2. Prediction Interface
+## 2. Dataset Download and Adapter Inputs
 
-- [ ] 2.1 Add a shared prediction result data structure for request ID, layer ID, expert IDs, confidence, source, fallback key, and optional scores
-- [ ] 2.2 Add RouteSig prediction adapter that emits the shared prediction result shape
-- [ ] 2.3 Add global frequency, request LRU, sequence history, and oracle adapters using the same prediction result shape
-- [ ] 2.4 Add unit tests for prediction shape, fallback key reporting, and low-confidence fallback behavior
+- [ ] 2.1 Update only `DATASET_LIST` in `/home/youwei/bzh/dataset/download_dataset.py` with ShareGPT, LMSYS-Chat-1M, SWE-agent-trajectories, OpenCodeInstruct, and OpenMathInstruct-2
+- [ ] 2.2 Run the existing dataset download script and record any gated dataset failures without changing script logic
+- [ ] 2.3 Add a dedicated dataset adapter folder outside `tokenmoe/` for raw-to-workload conversion
+- [ ] 2.4 Implement one converter per dataset: ShareGPT, LMSYS, SWE-agent trajectories, OpenCodeInstruct, and OpenMathInstruct-2
+- [ ] 2.5 Emit one normalized prompt workload JSONL per dataset under `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/`
+- [ ] 2.6 Emit a manifest recording source paths, output paths, sample counts, field mapping version, conversion command, unavailable fields, license/access status, and redaction status
+- [ ] 2.7 Preserve `source_index`, group ID, and timestamp fields where available for group-preserving time splits
+- [ ] 2.8 Mark each adapter output with claim scope: real-agent metadata, chat/prompt-only, or domain-instruction
+- [ ] 2.9 For SWE-agent-derived workloads, emit dependency edges and ready times when event order allows DAG reconstruction
 
-## 3. Prediction-Based DAG Replay
+## 3. Prompt Block and Token Span Schema
 
-- [ ] 3.1 Refactor scheduler replay so legal ready-node construction remains dependency-safe
-- [ ] 3.2 Implement prediction-based batch scoring from per-layer top-M expert sets, waiting penalty, and confidence
-- [ ] 3.3 Preserve an oracle replay mode that uses true routed experts only for upper-bound comparison
-- [ ] 3.4 Report baseline, RouteSig prediction, and oracle replay metrics separately
-- [ ] 3.5 Add tests proving scheduler decisions do not violate dependencies and do not use true routed experts in prediction mode
+- [ ] 3.1 Introduce explicit workload and trace v2 schema versions while retaining v1 readers for compatibility
+- [ ] 3.2 Extend workload metadata with prompt block spans including segment ID, block type, segment position, character start/end, source group ID, source index, timestamp when available, claim scope, and alignment status fields
+- [ ] 3.3 Update adapters so every normalized prompt is built from typed blocks and records character spans
+- [ ] 3.4 Extend trace schema to store prompt token spans per segment after tokenizer alignment
+- [ ] 3.5 Extend trace schema with model `moe_layer_ids`, prompt-only routing flags, backend, fallback status, and segment-unavailable reasons
+- [ ] 3.6 Mark records with failed or ambiguous span alignment explicitly rather than silently treating them as normal block-level traces
+- [ ] 3.7 Add analysis-time rejection of mixed v1/v2 inputs
+- [ ] 3.8 Add fast schema tests for workload JSONL roundtrip, span invariants, v2 version checks, and manifest shape
 
-## 4. Locality Metrics and Reporting
+## 4. vLLM Prompt-Only Routed Expert Collection
 
-- [ ] 4.1 Compute temporal locality metrics from ordered traces, including reuse distance and phase-transition overlap where data is available
-- [ ] 4.2 Compute spatial locality metrics including per-layer fanout, per-expert token count, and batch expert overlap
-- [ ] 4.3 Add locality metrics to `analysis/locality_metrics.json` and markdown reports with unavailable metrics marked explicitly
-- [ ] 4.4 Add tests for locality metrics on synthetic traces with known reuse and overlap patterns
+- [ ] 4.1 Remove the active Transformers router-logit backend from the trace collection CLI and docs
+- [ ] 4.2 Keep trace collection focused on vLLM `enable_return_routed_experts=True`
+- [ ] 4.3 Configure collection with minimal generation and `routed_experts_prompt_start=0`
+- [ ] 4.4 Truncate routed experts to `prompt_token_count` when vLLM returns prompt plus decode routing
+- [ ] 4.5 Verify tokenizer-aligned token IDs against vLLM `prompt_token_ids`; mark the whole record segment-unavailable on mismatch
+- [ ] 4.6 Derive and persist `moe_layer_ids`, then filter or mark non-MoE layers unavailable before trace writing
+- [ ] 4.7 Add vLLM preflight assertions for MoE model, routed-experts enabled, no pipeline parallelism, no context parallelism, no KV transfer/connectors, explicit TP/EP, dtype, max model length, and GPU memory settings
+- [ ] 4.8 Validate segment token spans against routed-expert token dimensions and MoE-layer IDs
+- [ ] 4.9 Collect Qwen3-30B-A3B prompt traces for 256 records from each of the five external workload files
+- [ ] 4.10 Collect DeepSeek-V2-Lite-Chat prompt traces for 256 records from ShareGPT and 256 records from SWE-agent trajectories
+- [ ] 4.11 Optionally collect Mixtral-8x7B-Instruct prompt traces as compatibility validation
 
-## 5. MoE Model Download Preparation
+## 5. Segment-Aware Prediction Interface
 
-- [ ] 5.1 Refactor `/home/youwei/bzh/model/download.py` into an argparse CLI with profile, model, dry-run, local-root, and endpoint options
-- [ ] 5.2 Add `moe-target` as the primary model profile with Qwen3-30B-A3B, Mixtral-8x7B-Instruct, and DeepSeek-V2-Lite-Chat candidates
-- [ ] 5.3 Preserve the local hardcoded token for this experiment while ensuring it is never printed in logs or dry-run output
-- [ ] 5.4 Add dry-run output that prints planned repo IDs, local paths, endpoint, and profile without downloading
-- [ ] 5.5 Add mocked or dry-run tests for download plan construction without network access
+- [ ] 5.1 Add a shared prediction result structure for request ID, segment ID, layer ID, expert IDs, normalized expert weights, confidence, source, fallback key, scores, block type, segment position, and token span
+- [ ] 5.2 Add segment-aware RouteSig update and lookup keyed by role, phase, block type, segment position, and fallback levels
+- [ ] 5.3 Add global frequency, request LRU, sequence history, temporal window frequency, and oracle adapters using the same prediction result shape
+- [ ] 5.4 Define expert-weight conversion rules: frequency predictors normalize counts, Top-M-only predictors use explicit uniform weights, and oracle weights are used only in oracle mode
+- [ ] 5.5 Implement Top-M budgets as `1x`, `1.5x`, `2x`, and `3x` router top-k, with `2x` as the main report setting
+- [ ] 5.6 Add confidence, fallback-key, unavailable-span, unavailable-layer, and claim-scope reporting to prediction outputs
+- [ ] 5.7 Add fast logic tests for prediction shape, expert-weight normalization, fallback order, segment aggregation, and budget selection
 
-## 6. Documentation and Validation
+## 6. Prediction Evaluation
 
-- [ ] 6.1 Update README and dataset/model documentation with prediction replay and MoE download commands
-- [ ] 6.2 Update reports to state clearly when results are replay, prediction, oracle, or real vLLM execution
-- [ ] 6.3 Run `pytest -q tests`
-- [ ] 6.4 Run the trace analysis command on existing traces and inspect generated metrics for baseline/prediction/oracle separation
-- [ ] 6.5 Run `/home/youwei/bzh/model/download.py --dry-run` with the confirmed MoE profile
+- [ ] 6.1 Implement per `(dataset, model)` group-preserving time-ordered 70/30 train/eval split by conversation, trajectory, workflow, or source item before request/segment expansion
+- [ ] 6.2 During eval, enforce predict-before-update online scoring for every predictor
+- [ ] 6.3 Report expert-label hit rate, exact-token hit rate, weighted coverage or explicit unavailability, and confidence calibration
+- [ ] 6.4 Report per-block-type, per-layer, segment-length bucket, and fallback-key metrics
+- [ ] 6.5 Report real-agent metadata, chat/prompt-only, and domain-instruction claim scopes separately
+- [ ] 6.6 Report baseline, RouteSig, and oracle results separately without replacing prediction metrics with oracle values
+- [ ] 6.7 Reject evaluation inputs that include non-vLLM backends, fallback traces, mixed v1/v2 schemas, non-prompt routing, or non-MoE layers treated as active experts
+
+## 7. Prediction-Based Scheduler Replay
+
+- [ ] 7.1 Refactor replay so legal ready-node construction remains dependency-safe and reports dependency violations
+- [ ] 7.2 Aggregate segment-level predictions into request and batch expert-token-label demand using `segment_token_count * router_top_k * normalized_expert_weight`
+- [ ] 7.3 Score candidate batches using predicted fanout cost, predicted token-density cost, waiting cost, confidence gating, and starvation guard
+- [ ] 7.4 Use true vLLM routed experts only after batch selection for actual fanout, token-density, hit-rate, and oracle-gap scoring
+- [ ] 7.5 Compare FIFO, temporal baseline, RouteSig prediction, and oracle future demand modes
+- [ ] 7.6 Report MoE execution proxy, scheduling cost, policy comparison, low-confidence gated fraction, missing-span fraction, unavailable-layer fraction, and unavailable metric fraction
+- [ ] 7.7 Ensure non-agent datasets are not used to support agent-DAG scheduling claims; report them only as prompt/domain locality replay where applicable
+- [ ] 7.8 Mark scheduler replay unavailable for datasets that lack dependency edges or ready times instead of reporting arbitrary independent-request batching as agent scheduling
+- [ ] 7.9 Remove prefetch and EPLB simulator/report outputs from the main analysis path for this change, or label legacy outputs as archived and excluded
+
+## 8. Documentation and Validation
+
+- [ ] 8.1 Update README and dataset/model docs with dataset download, adapter conversion, vLLM trace collection, prediction evaluation, and scheduler replay commands
+- [ ] 8.2 Update reports to state clearly that results are prompt-only vLLM MoE traces and offline prediction replay, not online runtime acceleration
+- [ ] 8.3 Document next-stage work for online expert prefetch, vLLM scheduler modification, and proactive EPLB replica placement
+- [ ] 8.4 Document concrete vLLM launch/preflight profiles for Qwen3-30B-A3B and DeepSeek-V2-Lite-Chat
+- [ ] 8.5 Run fast tests for schema, adapter, prediction, and replay logic
+- [ ] 8.6 Run required real-model validation: Qwen3-30B-A3B over five datasets and DeepSeek-V2-Lite-Chat over ShareGPT plus SWE-agent trajectories
+- [ ] 8.7 Inspect generated reports for prediction-vs-baseline-vs-oracle separation, no Transformers-derived main experiment results, no fallback traces, prompt-only routing, required dataset/model coverage, correct claim-scope separation, and no active prefetch/EPLB result sections
