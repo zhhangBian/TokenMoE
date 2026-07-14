@@ -12,6 +12,8 @@ import numpy as np
 from tokenmoe.schema import WorkloadRecord, read_workload_jsonl
 from tokenmoe.trace import (
     CURRENT_TRACE_BACKEND,
+    TRACE_SCHEMA_V2,
+    TRACE_SCHEMA_V3,
     align_prompt_segments_with_tokenizer,
     decode_vllm_routed_experts_b64,
     trace_from_selected_experts,
@@ -61,6 +63,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, required=True)
     parser.add_argument("--kv-transfer-enabled", action="store_true")
     parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument(
+        "--router-scores",
+        choices=["on", "off"],
+        default="off",
+        help=(
+            "Capture aligned router top-k scores via the modified vLLM "
+            "fork; 'on' writes tokenmoe.trace.v3 records, 'off' keeps "
+            "ID-only tokenmoe.trace.v2 records."
+        ),
+    )
     parser.add_argument("--env-report", default=f"{DEFAULT_ARTIFACT_ROOT}/logs/trace_collection_env.json")
     return parser.parse_args()
 
@@ -87,6 +99,16 @@ def _llm_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     )
     if not accepts_kwargs and "enable_return_routed_experts" not in signature.parameters:
         raise RuntimeError("installed vLLM does not expose enable_return_routed_experts")
+    if args.router_scores == "on":
+        if (
+            not accepts_kwargs
+            and "enable_return_routed_expert_scores" not in signature.parameters
+        ):
+            raise RuntimeError(
+                "installed vLLM does not expose enable_return_routed_expert_scores; "
+                "rerun with --router-scores off for an ID-only v2 collection"
+            )
+        kwargs["enable_return_routed_expert_scores"] = True
     if accepts_kwargs or "enable_expert_parallel" in signature.parameters:
         kwargs["enable_expert_parallel"] = args.expert_parallel == "on"
     elif args.expert_parallel == "on":
@@ -149,6 +171,33 @@ def _prompt_only_routing(
     return routed[:prompt_token_count, :, :], decode_excluded
 
 
+# Per-model-family interpretation of the captured router top-k weights.
+# The capture point is BaseRouter.select_experts after _compute_routing,
+# i.e. the final combine weights before EPLB mapping.
+ROUTER_SCORE_SEMANTICS_BY_MODEL_TYPE = {
+    # softmax over all experts -> top-k -> renormalize (norm_topk_prob=True)
+    "qwen3_moe": "softmax_topk_renormalized",
+    "qwen2_moe": "softmax_topk_renormalized",
+    # softmax -> (group-limited) top-k; V2-Lite has norm_topk_prob=False and
+    # routed_scaling_factor=1.0, so weights are raw softmax probabilities of
+    # the selected experts (do not necessarily sum to 1 per token).
+    "deepseek_v2": "softmax_topk_scaled_unnormalized",
+    "deepseek_v3": "sigmoid_topk_scaled",
+}
+
+
+def _router_score_semantics(capability: Any) -> str:
+    semantics = ROUTER_SCORE_SEMANTICS_BY_MODEL_TYPE.get(capability.model_type)
+    if semantics is None:
+        raise RuntimeError(
+            "router score semantics are not documented for model_type "
+            f"{capability.model_type!r}; add it to "
+            "ROUTER_SCORE_SEMANTICS_BY_MODEL_TYPE or rerun with "
+            "--router-scores off"
+        )
+    return f"{capability.model_type}:{semantics}"
+
+
 def _collect_vllm(
     records: list[WorkloadRecord],
     *,
@@ -162,6 +211,8 @@ def _collect_vllm(
     llm = LLM(**_llm_kwargs(args))
     tokenizer = _tokenizer_from_llm(llm)
     params = _sampling_params(args)
+    capture_scores = args.router_scores == "on"
+    score_semantics = _router_score_semantics(capability) if capture_scores else None
     traces = []
     for batch_start in range(0, len(records), args.batch_size):
         batch = records[batch_start : batch_start + args.batch_size]
@@ -191,6 +242,25 @@ def _collect_vllm(
                 routed_experts,
                 prompt_token_count=len(prompt_token_ids),
             )
+            router_scores = None
+            scores_unavailable_reason = None
+            if capture_scores:
+                raw_scores = getattr(completion, "routed_expert_scores", None)
+                if raw_scores is None:
+                    # Fail-closed: keep IDs, mark scores unavailable.
+                    scores_unavailable_reason = (
+                        "vllm_output_missing_routed_expert_scores"
+                    )
+                else:
+                    scores = np.asarray(raw_scores, dtype=np.float32)
+                    full_shape = _routed_experts_array(routed_experts).shape
+                    if scores.shape != full_shape:
+                        raise RuntimeError(
+                            f"{record.request_id}: routed_expert_scores shape "
+                            f"{scores.shape} misaligned with routed_experts "
+                            f"{full_shape}"
+                        )
+                    router_scores = scores[: len(prompt_token_ids), :, :]
             generated = [int(item) for item in (completion.token_ids or [])]
             trace = trace_from_selected_experts(
                 request_id=record.request_id,
@@ -199,6 +269,12 @@ def _collect_vllm(
                 backend=CURRENT_TRACE_BACKEND,
                 prompt=record.prompt,
                 selected_experts=selected,
+                router_scores=router_scores,
+                schema_version=TRACE_SCHEMA_V3 if capture_scores else TRACE_SCHEMA_V2,
+                router_score_semantics=score_semantics
+                if router_scores is not None
+                else None,
+                router_scores_unavailable_reason=scores_unavailable_reason,
                 token_ids=[int(item) for item in prompt_token_ids],
                 generated_token_ids=generated,
                 output_token_count=len(generated),
@@ -257,8 +333,11 @@ def main() -> None:
             "kv_transfer_enabled": args.kv_transfer_enabled,
             "max_tokens": args.max_tokens,
             "batch_size": args.batch_size,
+            "router_scores": args.router_scores,
         },
     }
+    if args.router_scores == "on":
+        env_report["router_score_semantics"] = _router_score_semantics(capability)
     traces = _collect_vllm(workload_records, args=args, capability=capability)
     write_trace_jsonl(traces, args.output)
     if args.parquet_output:

@@ -186,6 +186,11 @@ def make_record(
     dependency_edges: list[tuple[str, str]] | None = None,
     unavailable_fields: list[str] | None = None,
     dag_available: bool = False,
+    trajectory_phase: str | None = None,
+    event_outcome: str | None = None,
+    dag_depth: int | None = None,
+    group_local_step_index: int | None = None,
+    on_critical_path: bool | None = None,
 ) -> WorkloadRecord:
     prompt, segments = build_prompt(blocks)
     block_types = [segment.block_type for segment in segments] or ["prompt"]
@@ -198,6 +203,11 @@ def make_record(
         graph_node_type=graph_node_type,
         prompt_block_types=block_types,
         ready_time=ready_time,
+        trajectory_phase=trajectory_phase,
+        event_outcome=event_outcome,
+        dag_depth=dag_depth,
+        group_local_step_index=group_local_step_index,
+        on_critical_path=on_critical_path,
     )
     return WorkloadRecord(
         request_id=request_id,
@@ -243,9 +253,13 @@ def write_manifest(
     dag_available: bool,
     license_access_status: str = "source_dataset_terms_required",
     redaction_status: str = "raw_prompt_preserved_local_artifact_only",
+    manifest_extra: dict[str, Any] | None = None,
 ) -> Path:
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
-    manifest_path = MANIFEST_DIR / f"{adapter_name}_manifest.json"
+    # Derive from the output workload filename so suffixed runs (e.g. `_1k`)
+    # never overwrite baseline manifests (task 7.5).
+    manifest_stem = output_path.stem.replace("_prompt_workloads", "")
+    manifest_path = MANIFEST_DIR / f"{manifest_stem}_manifest.json"
     payload = {
         "adapter": adapter_name,
         "source_dataset": source_dataset,
@@ -260,6 +274,8 @@ def write_manifest(
         "license_access_status": license_access_status,
         "redaction_status": redaction_status,
     }
+    if manifest_extra:
+        payload.update(manifest_extra)
     manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest_path
 
@@ -280,6 +296,7 @@ def run_converter(
     output_name: str,
     claim_scope: str,
     convert_fn: Any,
+    manifest_extra: dict[str, Any] | None = None,
 ) -> None:
     add_common_args(parser, source_dataset, output_name)
     args = parser.parse_args()
@@ -297,6 +314,7 @@ def run_converter(
         unavailable_fields=unavailable_fields,
         claim_scope=claim_scope,
         dag_available=dag_available,
+        manifest_extra=manifest_extra,
     )
     print(f"wrote {sample_count} workload records to {output_path}")
     print(f"wrote manifest to {manifest}")

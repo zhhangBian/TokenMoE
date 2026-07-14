@@ -9,7 +9,12 @@ from typing import Iterable
 import matplotlib.pyplot as plt
 import numpy as np
 
-from tokenmoe.metrics import evaluate_segment_predictors, layer_histogram, locality_summary
+from tokenmoe.metrics import (
+    evaluate_metadata_ablations,
+    evaluate_segment_predictors,
+    layer_histogram,
+    locality_summary,
+)
 from tokenmoe.schema import WorkloadRecord
 from tokenmoe.simulators import simulator_summary
 from tokenmoe.trace import TraceRecord, validate_current_stage_traces
@@ -191,18 +196,31 @@ def write_reports(
 
     log_stage("computing locality summary")
     summary = locality_summary(records)
-    log_stage("evaluating segment predictors")
+    log_stage("evaluating segment predictors (primary split 0.7)")
     prediction_summary = evaluate_segment_predictors(
         records,
         require_current_stage=require_current_stage,
     )
     summary["top_m_hit_rate"] = _topm_rows_from_prediction(prediction_summary)
     summary["layer_sensitivity"] = _layer_sensitivity_from_prediction(prediction_summary)
+    log_stage("evaluating segment predictors (second split 0.5)")
+    prediction_second_split = evaluate_segment_predictors(
+        records,
+        train_fraction=0.5,
+        require_current_stage=require_current_stage,
+    )
+    log_stage("evaluating metadata ablations (2x budget)")
+    ablation_summary = evaluate_metadata_ablations(
+        records,
+        require_current_stage=require_current_stage,
+    )
     log_stage("running scheduler replay")
     sim = simulator_summary(records, workloads)
     metrics_payload = {
         "locality": summary,
         "prediction": prediction_summary,
+        "prediction_second_split": prediction_second_split,
+        "metadata_ablations": ablation_summary,
         "simulators": sim,
     }
     (output / "locality_metrics.json").write_text(

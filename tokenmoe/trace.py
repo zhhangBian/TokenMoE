@@ -15,7 +15,12 @@ from tokenmoe.schema import AgentNodeMeta, PromptSegment, default_prompt_segment
 
 TRACE_SCHEMA_V1 = "tokenmoe.trace.v1"
 TRACE_SCHEMA_V2 = "tokenmoe.trace.v2"
-CURRENT_TRACE_SCHEMA = TRACE_SCHEMA_V2
+TRACE_SCHEMA_V3 = "tokenmoe.trace.v3"
+CURRENT_TRACE_SCHEMA = TRACE_SCHEMA_V3
+# Schema versions accepted by current-stage analysis. A single analysis run
+# must be homogeneous (no v2/v3 mixing), but either version alone is valid:
+# v2 = expert IDs only, v3 = IDs + aligned router scores.
+ANALYSIS_TRACE_SCHEMAS = frozenset({TRACE_SCHEMA_V2, TRACE_SCHEMA_V3})
 CURRENT_TRACE_BACKEND = "vllm-routed-experts"
 
 
@@ -84,6 +89,13 @@ class TraceRecord:
     backend_fallback_reason: str | None = None
     segment_unavailable_reason: str | None = None
     unavailable_layer_ids: list[int] = field(default_factory=list)
+    # v3: how to interpret router scores for this model, e.g.
+    # "qwen3_moe_softmax_topk_renormalized" or
+    # "deepseek_v2_softmax_topk_scaled". None for v2 / score-free records.
+    router_score_semantics: str | None = None
+    # v3: why scores are absent despite a score-enabled run (fail-closed
+    # marker); None when scores are present or the run was ID-only by design.
+    router_scores_unavailable_reason: str | None = None
     router_top_k: int | None = None
     num_experts: int | None = None
     source_dataset: str | None = None
@@ -126,6 +138,10 @@ class TraceRecord:
             unavailable_layer_ids=[
                 int(item) for item in data.get("unavailable_layer_ids", [])
             ],
+            router_score_semantics=data.get("router_score_semantics"),
+            router_scores_unavailable_reason=data.get(
+                "router_scores_unavailable_reason"
+            ),
             router_top_k=None
             if data.get("router_top_k") in (None, "", "null")
             else int(data["router_top_k"]),
@@ -160,6 +176,8 @@ class TraceRecord:
             "backend_fallback_reason": self.backend_fallback_reason,
             "segment_unavailable_reason": self.segment_unavailable_reason,
             "unavailable_layer_ids": list(self.unavailable_layer_ids),
+            "router_score_semantics": self.router_score_semantics,
+            "router_scores_unavailable_reason": self.router_scores_unavailable_reason,
             "router_top_k": self.router_top_k,
             "num_experts": self.num_experts,
             "source_dataset": self.source_dataset,
@@ -187,6 +205,13 @@ class TraceRecord:
         if not self.layers or not self.layers[0].selected_experts:
             return 0
         return len(self.layers[0].selected_experts[0])
+
+    @property
+    def has_router_scores(self) -> bool:
+        """True when every layer carries aligned router scores."""
+        return bool(self.layers) and all(
+            layer.router_scores is not None for layer in self.layers
+        )
 
 
 def active_expert_histogram(selected_experts: np.ndarray) -> dict[int, int]:
@@ -220,6 +245,8 @@ def trace_from_selected_experts(
     backend_fallback_reason: str | None = None,
     segment_unavailable_reason: str | None = None,
     unavailable_layer_ids: list[int] | None = None,
+    router_score_semantics: str | None = None,
+    router_scores_unavailable_reason: str | None = None,
     router_top_k: int | None = None,
     num_experts: int | None = None,
     source_dataset: str | None = None,
@@ -291,6 +318,8 @@ def trace_from_selected_experts(
         backend_fallback_reason=backend_fallback_reason,
         segment_unavailable_reason=segment_unavailable_reason,
         unavailable_layer_ids=list(unavailable_layer_ids or []),
+        router_score_semantics=router_score_semantics,
+        router_scores_unavailable_reason=router_scores_unavailable_reason,
         router_top_k=router_top_k or int(selected_by_output_layer.shape[2]),
         num_experts=num_experts,
         source_dataset=source_dataset,
@@ -411,9 +440,10 @@ def validate_current_stage_traces(records: Iterable[TraceRecord]) -> None:
     versions = {record.schema_version for record in materialized}
     if len(versions) > 1:
         raise TraceValidationError(f"mixed trace schema versions: {sorted(versions)}")
-    if versions and versions != {TRACE_SCHEMA_V2}:
+    if versions and not versions <= ANALYSIS_TRACE_SCHEMAS:
         raise TraceValidationError(
-            f"current-stage analysis requires {TRACE_SCHEMA_V2}, got {sorted(versions)}"
+            "current-stage analysis requires one of "
+            f"{sorted(ANALYSIS_TRACE_SCHEMAS)}, got {sorted(versions)}"
         )
     for record in materialized:
         if record.backend != CURRENT_TRACE_BACKEND:
@@ -432,6 +462,19 @@ def validate_current_stage_traces(records: Iterable[TraceRecord]) -> None:
             )
         if not record.moe_layer_ids:
             raise TraceValidationError(f"{record.request_id}: missing moe_layer_ids")
+        is_v3 = record.schema_version == TRACE_SCHEMA_V3
+        if is_v3:
+            if record.has_router_scores:
+                if not record.router_score_semantics:
+                    raise TraceValidationError(
+                        f"{record.request_id}: v3 record with router scores "
+                        "must declare router_score_semantics"
+                    )
+            elif not record.router_scores_unavailable_reason:
+                raise TraceValidationError(
+                    f"{record.request_id}: v3 record without router scores "
+                    "must declare router_scores_unavailable_reason"
+                )
         moe_layers = {int(layer_id) for layer_id in record.moe_layer_ids}
         for layer in record.layers:
             if layer.layer_id not in moe_layers:
@@ -444,6 +487,19 @@ def validate_current_stage_traces(records: Iterable[TraceRecord]) -> None:
                     f"{record.request_id}: layer {layer.layer_id} token dimension "
                     f"{selected.shape[0]} != prompt_token_count {record.prompt_token_count}"
                 )
+            if layer.router_scores is not None:
+                scores = layer.scores_array()
+                assert scores is not None
+                if scores.shape != selected.shape:
+                    raise TraceValidationError(
+                        f"{record.request_id}: layer {layer.layer_id} router_scores "
+                        f"shape {scores.shape} != selected_experts {selected.shape}"
+                    )
+                if not np.all(np.isfinite(scores)):
+                    raise TraceValidationError(
+                        f"{record.request_id}: layer {layer.layer_id} router_scores "
+                        "contain non-finite values"
+                    )
         for segment in record.prompt_segments:
             if segment.alignment_status == "aligned":
                 if segment.token_start is None or segment.token_end is None:

@@ -12,9 +12,16 @@ from tokenmoe.routesig import RouteSigStore, route_entropy_from_probabilities
 from tokenmoe.schema import AgentNodeMeta
 from tokenmoe.trace import TraceRecord, validate_current_stage_traces
 from tokenmoe.prediction import (
+    HybridRouteSigTemporalPredictor,
+    MetadataMask,
+    MetadataMaskingPredictor,
     PredictedExpertSet,
+    RouteSigSegmentPredictor,
+    SegmentPredictor,
+    TemporalWindowSegmentPredictor,
     build_predictors,
     record_segments,
+    scores_array_for_layer,
     selected_array_for_layer,
     top_m_budgets,
 )
@@ -435,6 +442,9 @@ def _score_prediction(
     segment,
 ) -> dict[str, float | int | str | None]:
     predicted = set(prediction.expert_ids)
+    score_covered = 0.0
+    score_total = 0.0
+    scores_available = False
     if segment.token_start is None or segment.token_end is None:
         expert_total = 0
         expert_hits = 0
@@ -447,6 +457,12 @@ def _score_prediction(
         valid = selected[selected >= 0]
         expert_total = int(valid.size)
         token_total = int(selected.shape[0])
+        scores = scores_array_for_layer(record, prediction.layer_id)
+        segment_scores = None
+        if scores is not None:
+            scores_available = True
+            segment_scores = scores[segment.token_start : segment.token_end]
+            score_total = float(segment_scores[selected >= 0].sum())
         if predicted and valid.size:
             predicted_arr = np.fromiter(predicted, dtype=np.int64)
             expert_hits = int(np.isin(valid, predicted_arr).sum())
@@ -454,10 +470,16 @@ def _score_prediction(
             token_has_label = valid_mask.any(axis=1)
             token_hits = np.isin(selected, predicted_arr) | ~valid_mask
             exact_token_hits = int((token_has_label & token_hits.all(axis=1)).sum())
+            if segment_scores is not None:
+                hit_mask = np.isin(selected, predicted_arr) & valid_mask
+                score_covered = float(segment_scores[hit_mask].sum())
         else:
             expert_hits = 0
             exact_token_hits = 0
     return {
+        "score_covered": score_covered,
+        "score_total": score_total,
+        "scores_available": scores_available,
         "expert_hits": expert_hits,
         "expert_total": expert_total,
         "exact_token_hits": exact_token_hits,
@@ -478,11 +500,18 @@ def _summarize_score_rows(rows: list[dict[str, object]]) -> dict[str, object]:
     token_total = sum(int(row["token_total"]) for row in rows)
     confidences = [float(row["confidence"]) for row in rows]
     fallback_counts = Counter(str(row["fallback_key"]) for row in rows)
+    score_covered = sum(float(row.get("score_covered", 0.0)) for row in rows)
+    score_total = sum(float(row.get("score_total", 0.0)) for row in rows)
+    scores_available = any(bool(row.get("scores_available")) for row in rows)
     return {
         "expert_label_hit_rate": expert_hits / expert_total if expert_total else 0.0,
         "exact_token_hit_rate": exact_hits / token_total if token_total else 0.0,
-        "weighted_coverage": None,
-        "weighted_coverage_status": "unavailable_router_scores_not_captured_by_vllm",
+        "weighted_coverage": (score_covered / score_total)
+        if scores_available and score_total > 0.0
+        else None,
+        "weighted_coverage_status": "computed_from_v3_router_scores"
+        if scores_available and score_total > 0.0
+        else "unavailable_router_scores_not_captured_by_vllm",
         "mean_confidence": float(np.mean(confidences)) if confidences else 0.0,
         "confidence_calibration": _confidence_bins(rows),
         "fallback_key_counts": dict(fallback_counts),
@@ -500,6 +529,9 @@ class ScoreAccumulator:
         self.token_total = 0
         self.confidence_sum = 0.0
         self.count = 0
+        self.score_covered = 0.0
+        self.score_total = 0.0
+        self.scores_available = False
         self.fallback_counts: Counter[str] = Counter()
         self.confidence_bins = [
             {"lo": 0.0, "hi": 0.25, "hits": 0, "total": 0, "count": 0},
@@ -518,6 +550,11 @@ class ScoreAccumulator:
         confidence = float(row["confidence"])
         self.confidence_sum += confidence
         self.count += 1
+        self.score_covered += float(row.get("score_covered", 0.0))
+        self.score_total += float(row.get("score_total", 0.0))
+        self.scores_available = self.scores_available or bool(
+            row.get("scores_available")
+        )
         self.fallback_counts[str(row["fallback_key"])] += 1
         for item in self.confidence_bins:
             if float(item["lo"]) <= confidence < float(item["hi"]):
@@ -550,8 +587,12 @@ class ScoreAccumulator:
             "exact_token_hit_rate": self.exact_hits / self.token_total
             if self.token_total
             else 0.0,
-            "weighted_coverage": None,
-            "weighted_coverage_status": "unavailable_router_scores_not_captured_by_vllm",
+            "weighted_coverage": (self.score_covered / self.score_total)
+            if self.scores_available and self.score_total > 0.0
+            else None,
+            "weighted_coverage_status": "computed_from_v3_router_scores"
+            if self.scores_available and self.score_total > 0.0
+            else "unavailable_router_scores_not_captured_by_vllm",
             "mean_confidence": self.confidence_sum / self.count if self.count else 0.0,
             "confidence_calibration": bins,
             "fallback_key_counts": dict(self.fallback_counts),
@@ -585,6 +626,58 @@ def _confidence_bins(rows: list[dict[str, object]]) -> list[dict[str, float]]:
     return result
 
 
+BOOTSTRAP_RESAMPLES = 1000
+
+
+def bootstrap_group_delta(
+    groups: list[str],
+    stats_a: dict[str, list[float]],
+    stats_b: dict[str, list[float]],
+    *,
+    n_resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = 0,
+) -> dict[str, object]:
+    """Paired group-level bootstrap CI for hit-rate delta (a - b)."""
+
+    hits_a = np.asarray([stats_a.get(g, (0.0, 0.0))[0] for g in groups], dtype=np.float64)
+    totals_a = np.asarray([stats_a.get(g, (0.0, 0.0))[1] for g in groups], dtype=np.float64)
+    hits_b = np.asarray([stats_b.get(g, (0.0, 0.0))[0] for g in groups], dtype=np.float64)
+    totals_b = np.asarray([stats_b.get(g, (0.0, 0.0))[1] for g in groups], dtype=np.float64)
+    point_a = hits_a.sum() / totals_a.sum() if totals_a.sum() > 0 else 0.0
+    point_b = hits_b.sum() / totals_b.sum() if totals_b.sum() > 0 else 0.0
+    result: dict[str, object] = {
+        "delta": float(point_a - point_b),
+        "n_groups": len(groups),
+        "n_resamples": int(n_resamples),
+        "method": "paired_group_bootstrap_percentile_95",
+    }
+    if len(groups) < 2:
+        result.update(
+            {"ci_low": None, "ci_high": None, "significant": None, "reason": "not_enough_groups"}
+        )
+        return result
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(groups), size=(int(n_resamples), len(groups)))
+    resampled_ha = hits_a[idx].sum(axis=1)
+    resampled_ta = np.maximum(totals_a[idx].sum(axis=1), 1e-12)
+    resampled_hb = hits_b[idx].sum(axis=1)
+    resampled_tb = np.maximum(totals_b[idx].sum(axis=1), 1e-12)
+    deltas = resampled_ha / resampled_ta - resampled_hb / resampled_tb
+    ci_low, ci_high = np.percentile(deltas, [2.5, 97.5])
+    result.update(
+        {
+            "ci_low": float(ci_low),
+            "ci_high": float(ci_high),
+            "significant": bool(ci_low > 0.0 or ci_high < 0.0),
+        }
+    )
+    return result
+
+
+def _record_group(record: TraceRecord) -> str:
+    return record.source_group_id or record.request_id
+
+
 def evaluate_segment_predictors(
     records: list[TraceRecord],
     *,
@@ -592,6 +685,7 @@ def evaluate_segment_predictors(
     train_fraction: float = 0.7,
     require_current_stage: bool = True,
     temporal_window: int = 64,
+    n_bootstrap_resamples: int = BOOTSTRAP_RESAMPLES,
 ) -> dict[str, object]:
     if require_current_stage:
         validate_current_stage_traces(records)
@@ -623,6 +717,8 @@ def evaluate_segment_predictors(
             temporal_window=temporal_window,
             include_oracle=True,
         )
+        budget_rows: list[dict[str, object]] = []
+        budget_group_stats: dict[str, dict[str, list[float]]] = {}
         for predictor in predictors:
             predictor_started = time.perf_counter()
             print(
@@ -635,8 +731,10 @@ def evaluate_segment_predictors(
             by_layer: dict[str, ScoreAccumulator] = defaultdict(ScoreAccumulator)
             by_bucket: dict[str, ScoreAccumulator] = defaultdict(ScoreAccumulator)
             by_scope: dict[str, ScoreAccumulator] = defaultdict(ScoreAccumulator)
+            group_stats: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
             unavailable_spans = 0
             for record in eval_records:
+                group = _record_group(record)
                 for segment in record_segments(record):
                     if segment.token_start is None or segment.token_end is None:
                         unavailable_spans += 1
@@ -651,13 +749,23 @@ def evaluate_segment_predictors(
                         by_layer[str(row["layer_id"])].update(row)
                         by_bucket[str(row["segment_length_bucket"])].update(row)
                         by_scope[str(row["claim_scope"])].update(row)
+                        stats = group_stats[group]
+                        stats[0] += float(row["expert_hits"])
+                        stats[1] += float(row["expert_total"])
                 predictor.update(record)
+            budget_group_stats[predictor.name] = dict(group_stats)
             summary = accumulator.summary()
-            results["results"].append(
+            gate_report = (
+                predictor.gate_report()
+                if hasattr(predictor, "gate_report")
+                else None
+            )
+            result_row = (
                 {
                     "predictor": predictor.name,
                     "budget": budget_name,
                     "top_m": top_m,
+                    **({"gate_report": gate_report} if gate_report else {}),
                     **summary,
                     "per_block_type": {
                         key: value.summary()
@@ -678,10 +786,181 @@ def evaluate_segment_predictors(
                     "unavailable_span_count": unavailable_spans,
                 }
             )
+            results["results"].append(result_row)
+            budget_rows.append(result_row)
             print(
                 f"[analysis] segment predictor {predictor.name} "
                 f"budget={budget_name} done in "
                 f"{time.perf_counter() - predictor_started:.2f}s",
                 flush=True,
             )
+        # Group-level paired bootstrap CIs for hit-rate deltas vs baselines.
+        eval_groups = sorted({_record_group(record) for record in eval_records})
+        for row in budget_rows:
+            deltas: dict[str, object] = {}
+            for baseline in ("temporal_window_frequency", "global_frequency"):
+                if row["predictor"] == baseline or baseline not in budget_group_stats:
+                    continue
+                deltas[baseline] = bootstrap_group_delta(
+                    eval_groups,
+                    budget_group_stats[str(row["predictor"])],
+                    budget_group_stats[baseline],
+                    n_resamples=n_bootstrap_resamples,
+                )
+            if deltas:
+                row["delta_vs"] = deltas
+    # Per-layer signal map (which layers pass the hybrid metadata gate).
+    signal_map: dict[str, object] = {}
+    for row in results["results"]:
+        if row["predictor"] == "hybrid_routesig_temporal" and "gate_report" in row:
+            gate = row["gate_report"]
+            signal_map[str(row["budget"])] = {
+                "layer_gates": gate["layer_gates"],
+                "train_delta_vs_global": gate["train_delta_vs_global"],
+            }
+    results["per_layer_signal_map"] = signal_map
     return results
+
+
+def evaluate_segment_predictors_with_splits(
+    records: list[TraceRecord],
+    *,
+    train_fractions: tuple[float, ...] = (0.7, 0.5),
+    **kwargs: object,
+) -> dict[str, object]:
+    """Run the online evaluation on multiple group-preserving time splits."""
+
+    splits: dict[str, object] = {}
+    for fraction in train_fractions:
+        splits[f"group_time_{fraction}"] = evaluate_segment_predictors(
+            records, train_fraction=float(fraction), **kwargs
+        )
+    return {"splits": splits, "train_fractions": list(train_fractions)}
+
+
+METADATA_ABLATIONS: dict[str, dict[str, object]] = {
+    "full": {"kind": "hybrid", "mask": ()},
+    "minus_role": {"kind": "hybrid", "mask": ("role",)},
+    "minus_phase": {"kind": "hybrid", "mask": ("phase",)},
+    "minus_tool_type": {"kind": "hybrid", "mask": ("tool_type",)},
+    "minus_block_type": {"kind": "hybrid", "mask": ("block_type",)},
+    "minus_positions": {"kind": "hybrid", "mask": ("position",)},
+    "length_only": {"kind": "hybrid", "mask": (), "length_only": True},
+    "temporal_only": {"kind": "temporal"},
+    "routesig_only": {"kind": "routesig", "mask": ()},
+}
+
+
+def _build_ablation_predictor(
+    name: str,
+    spec: dict[str, object],
+    train: list[TraceRecord],
+    *,
+    top_m: int,
+    temporal_window: int,
+) -> SegmentPredictor:
+    kind = str(spec["kind"])
+    min_samples = max(4, top_m * 2)
+    if kind == "temporal":
+        predictor = TemporalWindowSegmentPredictor(train, window_size=temporal_window)
+        predictor.name = f"ablation:{name}"
+        return predictor
+    mask = MetadataMask(
+        spec.get("mask", ()),  # type: ignore[arg-type]
+        length_only=bool(spec.get("length_only", False)),
+    )
+    masked_train = mask.mask_records(train)
+    if kind == "routesig":
+        inner: SegmentPredictor = RouteSigSegmentPredictor(
+            masked_train, top_m=top_m, min_samples=min_samples
+        )
+    elif kind == "hybrid":
+        inner = HybridRouteSigTemporalPredictor(
+            masked_train,
+            top_m=top_m,
+            min_samples=min_samples,
+            window_size=temporal_window,
+        )
+    else:
+        raise ValueError(f"unknown ablation kind {kind!r}")
+    return MetadataMaskingPredictor(inner, mask, name=f"ablation:{name}")
+
+
+def evaluate_metadata_ablations(
+    records: list[TraceRecord],
+    *,
+    router_top_k: int | None = None,
+    budget: str = "2x",
+    train_fraction: float = 0.7,
+    require_current_stage: bool = True,
+    temporal_window: int = 64,
+    n_bootstrap_resamples: int = BOOTSTRAP_RESAMPLES,
+) -> dict[str, object]:
+    """Metadata ablation matrix at a single budget (default 2x, per the gate)."""
+
+    if require_current_stage:
+        validate_current_stage_traces(records)
+    if not records:
+        return {"available": False, "reason": "empty_records"}
+    effective_top_k = router_top_k or records[0].router_top_k or records[0].top_k
+    top_m = top_m_budgets(effective_top_k)[budget]
+    train, eval_records, split_info = split_records_by_group(
+        records, train_fraction=train_fraction
+    )
+    if not split_info.get("available"):
+        return {"available": False, "split": split_info}
+    eval_groups = sorted({_record_group(record) for record in eval_records})
+    started = time.perf_counter()
+    rows: list[dict[str, object]] = []
+    ablation_group_stats: dict[str, dict[str, list[float]]] = {}
+    for name, spec in METADATA_ABLATIONS.items():
+        print(
+            f"[analysis] ablation {name} budget={budget} start "
+            f"at {time.perf_counter() - started:.2f}s",
+            flush=True,
+        )
+        predictor = _build_ablation_predictor(
+            name, spec, train, top_m=top_m, temporal_window=temporal_window
+        )
+        accumulator = ScoreAccumulator()
+        group_stats: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+        for record in eval_records:
+            group = _record_group(record)
+            for segment in record_segments(record):
+                if segment.token_start is None or segment.token_end is None:
+                    continue
+                for layer in record.layers:
+                    prediction = predictor.predict(record, segment, layer.layer_id, top_m)
+                    row = _score_prediction(prediction, record, segment)
+                    accumulator.update(row)
+                    stats = group_stats[group]
+                    stats[0] += float(row["expert_hits"])
+                    stats[1] += float(row["expert_total"])
+            predictor.update(record)
+        ablation_group_stats[name] = dict(group_stats)
+        rows.append(
+            {
+                "ablation": name,
+                "kind": str(spec["kind"]),
+                "masked_fields": sorted(str(item) for item in spec.get("mask", ())),
+                "length_only": bool(spec.get("length_only", False)),
+                **accumulator.summary(),
+            }
+        )
+    for row in rows:
+        if row["ablation"] == "full":
+            continue
+        row["delta_vs_full"] = bootstrap_group_delta(
+            eval_groups,
+            ablation_group_stats[str(row["ablation"])],
+            ablation_group_stats["full"],
+            n_resamples=n_bootstrap_resamples,
+        )
+    return {
+        "available": True,
+        "budget": budget,
+        "top_m": top_m,
+        "router_top_k": effective_top_k,
+        "split": split_info,
+        "results": rows,
+    }

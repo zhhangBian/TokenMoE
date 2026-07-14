@@ -40,6 +40,13 @@ class AgentNodeMeta:
     deadline: float | None = None
     run_probability: float = 1.0
     criticality: float = 1.0
+    # Enriched agent metadata (heuristic-derived for SWE-agent; None when the
+    # source dataset cannot provide them).
+    trajectory_phase: str | None = None
+    event_outcome: str | None = None
+    dag_depth: int | None = None
+    group_local_step_index: int | None = None
+    on_critical_path: bool | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "AgentNodeMeta":
@@ -67,6 +74,21 @@ class AgentNodeMeta:
             else float(data["deadline"]),
             run_probability=float(data.get("run_probability", 1.0)),
             criticality=float(data.get("criticality", 1.0)),
+            trajectory_phase=None
+            if data.get("trajectory_phase") in (None, "", "null")
+            else str(data["trajectory_phase"]),
+            event_outcome=None
+            if data.get("event_outcome") in (None, "", "null")
+            else str(data["event_outcome"]),
+            dag_depth=None
+            if data.get("dag_depth") in (None, "", "null")
+            else int(data["dag_depth"]),
+            group_local_step_index=None
+            if data.get("group_local_step_index") in (None, "", "null")
+            else int(data["group_local_step_index"]),
+            on_critical_path=None
+            if data.get("on_critical_path") in (None, "", "null")
+            else bool(data["on_critical_path"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,20 +115,44 @@ class AgentNodeMeta:
     def segment_fallback_keys(
         self, block_type: str, segment_position: int | str | None
     ) -> list[tuple[str, ...]]:
-        """Return segment-aware RouteSig lookup keys from specific to global."""
+        """Return segment-aware RouteSig lookup keys from specific to global.
+
+        Order is fixed by the tokenmoe-route-signature spec. Enriched levels
+        (trajectory_phase / tool_type) are skipped when the workload does not
+        provide those fields.
+        """
 
         block = str(block_type or self.block_type_key or "unknown")
         position = str(segment_position if segment_position is not None else "unknown")
-        return [
-            (self.agent_id, self.role, self.phase, block, position),
-            (self.role, self.phase, block, position),
-            (self.role, self.phase, block),
-            (self.role, block),
-            (block,),
-            (self.role, self.phase),
-            (self.role,),
-            ("global",),
-        ]
+        keys: list[tuple[str, ...]] = []
+        if self.trajectory_phase and self.tool_type:
+            keys.append(
+                (
+                    self.agent_id,
+                    self.role,
+                    self.trajectory_phase,
+                    self.tool_type,
+                    block,
+                    position,
+                )
+            )
+            keys.append(
+                (self.role, self.trajectory_phase, self.tool_type, block, position)
+            )
+        if self.trajectory_phase:
+            keys.append((self.role, self.trajectory_phase, block, position))
+        keys.extend(
+            [
+                (self.role, self.phase, block, position),
+                (self.role, self.phase, block),
+                (self.role, block),
+                (block,),
+                (self.role, self.phase),
+                (self.role,),
+                ("global",),
+            ]
+        )
+        return keys
 
     def group_key(self, level: str) -> str:
         if level == "agent":
