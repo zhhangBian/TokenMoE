@@ -1,9 +1,0 @@
-{
-  "requested_backend": "transformers",
-  "model": "TitanML/tiny-mixtral",
-  "limit": 80,
-  "fallback_used": false,
-  "error": null,
-  "trace_records": 80,
-  "actual_backend": "transformers-router-logits"
-}
