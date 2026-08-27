@@ -1,180 +1,161 @@
+"""Online route signatures keyed only by pre-router request metadata."""
+
 from __future__ import annotations
 
-import json
 import math
-import time
 from collections import Counter, defaultdict, deque
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Any, Iterable
+from dataclasses import dataclass
+from typing import Iterable, Literal
 
 import numpy as np
 
-from tokenmoe.schema import AgentNodeMeta
-from tokenmoe.schema import PromptSegment
+from tokenmoe.schema import AgentNodeMeta, PromptSegment
 from tokenmoe.trace import TraceRecord
 
 
-_LAYER_ARRAY_CACHE: dict[int, dict[int, np.ndarray]] = {}
+StatisticsMode = Literal["count", "score_weighted"]
+RouteKey = tuple[str, ...]
 
 
-@dataclass
+def fallback_keys(meta: AgentNodeMeta, segment: PromptSegment) -> tuple[RouteKey, ...]:
+    """Return stable keys from most specific to global."""
+
+    block = segment.block_type
+    position = str(segment.position)
+    keys: list[RouteKey] = []
+    if meta.trajectory_phase and meta.tool_type:
+        keys.extend(
+            [
+                (
+                    meta.agent_id,
+                    meta.role,
+                    meta.trajectory_phase,
+                    meta.tool_type,
+                    block,
+                    position,
+                ),
+                (
+                    meta.role,
+                    meta.trajectory_phase,
+                    meta.tool_type,
+                    block,
+                    position,
+                ),
+            ]
+        )
+    if meta.trajectory_phase:
+        keys.append((meta.role, meta.trajectory_phase, block, position))
+    keys.extend(
+        [
+            (meta.role, meta.phase, block, position),
+            (meta.role, meta.phase, block),
+            (meta.role, block),
+            (block,),
+            (meta.role, meta.phase),
+            (meta.role,),
+            ("global",),
+        ]
+    )
+    return tuple(dict.fromkeys(keys))
+
+
+@dataclass(frozen=True, slots=True)
 class RouteSignature:
-    key: tuple[str, ...]
+    key: RouteKey
     layer_id: int
-    expert_prob: dict[int, float]
-    top_experts: list[int]
+    top_experts: tuple[int, ...]
+    probabilities: dict[int, float]
+    unseen_probability: float
     entropy: float
     confidence: float
-    miss_cost: dict[int, float]
-    sample_count: int
-    updated_at: float
-    smoothed: bool = False
-    statistics_mode: str = "count"
+    support: int
+    smoothed: bool
+    statistics_mode: StatisticsMode
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["key"] = list(self.key)
-        data["expert_prob"] = {str(k): float(v) for k, v in self.expert_prob.items()}
-        data["miss_cost"] = {str(k): float(v) for k, v in self.miss_cost.items()}
-        return data
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RouteSignature":
-        return cls(
-            key=tuple(str(item) for item in data["key"]),
-            layer_id=int(data["layer_id"]),
-            expert_prob={int(k): float(v) for k, v in data["expert_prob"].items()},
-            top_experts=[int(x) for x in data["top_experts"]],
-            entropy=float(data["entropy"]),
-            confidence=float(data["confidence"]),
-            miss_cost={int(k): float(v) for k, v in data["miss_cost"].items()},
-            sample_count=int(data["sample_count"]),
-            updated_at=float(data["updated_at"]),
-            smoothed=bool(data.get("smoothed", False)),
-            statistics_mode=str(data.get("statistics_mode", "count")),
-        )
+    def probability(self, expert_id: int) -> float:
+        return self.probabilities.get(expert_id, self.unseen_probability)
 
 
 class RouteSigStore:
-    """Online agent-conditioned expert distribution store."""
+    """Bounded online sufficient statistics for metadata-conditioned routing."""
 
     def __init__(
         self,
         *,
-        top_m: int = 4,
-        min_samples: int = 32,
-        stability_window: int = 12,
-        default_miss_cost: float = 1.0,
-        statistics_mode: str = "count",
-        smoothing_alpha: float = 0.5,
+        top_m: int,
+        min_support: int = 16,
+        smoothing: float = 0.5,
+        stability_window: int = 8,
+        statistics_mode: StatisticsMode = "count",
     ) -> None:
+        if top_m < 1 or min_support < 1 or smoothing < 0:
+            raise ValueError("invalid RouteSig configuration")
         if statistics_mode not in ("count", "score_weighted"):
-            raise ValueError(f"unknown statistics_mode {statistics_mode!r}")
-        self.top_m = int(top_m)
-        self.min_samples = int(min_samples)
-        self.stability_window = int(stability_window)
-        self.default_miss_cost = float(default_miss_cost)
+            raise ValueError(f"unsupported statistics mode {statistics_mode!r}")
+        self.top_m = top_m
+        self.min_support = min_support
+        self.smoothing = smoothing
         self.statistics_mode = statistics_mode
-        self.smoothing_alpha = float(smoothing_alpha)
-        self._counts: dict[tuple[tuple[str, ...], int], Counter[int]] = defaultdict(
-            Counter
+        self._counts: dict[tuple[RouteKey, int], Counter[int]] = defaultdict(Counter)
+        self._support: Counter[tuple[RouteKey, int]] = Counter()
+        self._recent: dict[tuple[RouteKey, int], deque[frozenset[int]]] = defaultdict(
+            lambda: deque(maxlen=stability_window)
         )
-        self._sample_counts: dict[tuple[tuple[str, ...], int], int] = defaultdict(int)
-        self._recent: dict[tuple[tuple[str, ...], int], deque[set[int]]] = defaultdict(
-            lambda: deque(maxlen=self.stability_window)
-        )
-        self._num_experts_by_layer: dict[int, int] = {}
-        self._signature_cache: dict[tuple[tuple[str, ...], int], RouteSignature | None] = {}
-
-    def update(self, meta: AgentNodeMeta, layer_id: int, selected: np.ndarray) -> None:
-        self._update_keys(meta.fallback_keys(), layer_id, selected)
+        self._num_experts: dict[int, int] = {}
+        self._cache: dict[tuple[RouteKey, int], RouteSignature] = {}
 
     def update_segment(
         self,
         meta: AgentNodeMeta,
         segment: PromptSegment,
         layer_id: int,
-        selected: np.ndarray,
-        scores: np.ndarray | None = None,
+        selected_experts: np.ndarray,
+        router_scores: np.ndarray | None = None,
+        *,
+        num_experts: int,
     ) -> None:
-        self._update_keys(
-            meta.segment_fallback_keys(segment.block_type, segment.segment_position),
-            layer_id,
-            selected,
-            scores=scores,
-        )
-
-    def _update_keys(
-        self,
-        keys: Iterable[tuple[str, ...]],
-        layer_id: int,
-        selected: np.ndarray,
-        scores: np.ndarray | None = None,
-    ) -> None:
-        selected_arr = np.asarray(selected)
-        if selected_arr.size == 0:
+        selected = np.asarray(selected_experts, dtype=np.int64).reshape(-1)
+        if selected.size == 0:
             return
-        flat = selected_arr.reshape(-1)
-        valid_mask = flat >= 0
-        valid = flat[valid_mask]
-        if valid.size == 0:
-            return
-        valid = valid.astype(np.int64, copy=False)
-        if self.statistics_mode == "score_weighted" and scores is not None:
-            score_flat = np.asarray(scores, dtype=np.float64).reshape(-1)
-            if score_flat.shape != flat.shape:
-                raise ValueError(
-                    "scores must have the same shape as selected experts"
-                )
-            valid_scores = score_flat[valid_mask]
-            hist: Counter[int] = Counter()
-            for expert in np.unique(valid):
-                hist[int(expert)] = float(valid_scores[valid == expert].sum())
+        if np.any((selected < 0) | (selected >= num_experts)):
+            raise ValueError("selected expert is outside the model expert range")
+        if self.statistics_mode == "score_weighted":
+            if router_scores is None:
+                raise ValueError("score_weighted RouteSig requires router scores")
+            scores = np.asarray(router_scores, dtype=np.float64).reshape(-1)
+            if scores.shape != selected.shape or not np.isfinite(scores).all():
+                raise ValueError("router scores are invalid")
+            histogram: Counter[int] = Counter()
+            for expert_id, score in zip(selected, scores):
+                histogram[int(expert_id)] += float(score)
         else:
-            experts, counts = np.unique(valid, return_counts=True)
-            hist = Counter(
-                {int(expert): int(count) for expert, count in zip(experts, counts)}
+            ids, counts = np.unique(selected, return_counts=True)
+            histogram = Counter(
+                {int(expert_id): int(count) for expert_id, count in zip(ids, counts)}
             )
-        max_expert = max(hist)
-        self._num_experts_by_layer[layer_id] = max(
-            self._num_experts_by_layer.get(layer_id, 0), max_expert + 1
-        )
-        active = set(hist)
-        for key in keys:
-            idx = (key, int(layer_id))
-            self._counts[idx].update(hist)
-            self._sample_counts[idx] += int(valid.size)
-            self._recent[idx].append(active)
-        self._signature_cache.clear()
+        self._num_experts[layer_id] = num_experts
+        active = frozenset(histogram)
+        for key in fallback_keys(meta, segment):
+            index = (key, layer_id)
+            self._counts[index].update(histogram)
+            self._support[index] += 1
+            self._recent[index].append(active)
+            self._cache.pop(index, None)
 
     def update_trace(self, record: TraceRecord) -> None:
-        for layer in record.layers:
-            selected = _selected_array_for_layer(record, layer.layer_id)
-            self.update(record.metadata, layer.layer_id, selected)
-
-    def update_segment_trace(self, record: TraceRecord) -> None:
-        layer_arrays = {
-            layer.layer_id: _selected_array_for_layer(record, layer.layer_id)
-            for layer in record.layers
-        }
-        layer_scores: dict[int, np.ndarray | None] = {}
-        if self.statistics_mode == "score_weighted":
-            layer_scores = {
-                layer.layer_id: layer.scores_array() for layer in record.layers
-            }
         for segment in record.prompt_segments:
             if segment.token_start is None or segment.token_end is None:
                 continue
+            token_slice = slice(segment.token_start, segment.token_end)
             for layer in record.layers:
-                selected = layer_arrays[layer.layer_id][
-                    segment.token_start : segment.token_end
-                ]
-                scores = layer_scores.get(layer.layer_id)
-                if scores is not None:
-                    scores = scores[segment.token_start : segment.token_end]
+                scores = layer.scores_array()
                 self.update_segment(
-                    record.metadata, segment, layer.layer_id, selected, scores=scores
+                    record.metadata,
+                    segment,
+                    layer.layer_id,
+                    layer.selected_array()[token_slice],
+                    None if scores is None else scores[token_slice],
+                    num_experts=record.num_experts,
                 )
 
     def update_many(self, records: Iterable[TraceRecord]) -> None:
@@ -184,174 +165,75 @@ class RouteSigStore:
     def lookup(
         self,
         meta: AgentNodeMeta,
-        layer_id: int,
-        *,
-        min_confidence: float = 0.0,
-    ) -> RouteSignature | None:
-        for key in meta.fallback_keys():
-            sig = self.signature(key, layer_id)
-            if sig is not None and sig.confidence >= min_confidence:
-                return sig
-        return None
-
-    def lookup_segment(
-        self,
-        meta: AgentNodeMeta,
         segment: PromptSegment,
         layer_id: int,
         *,
         min_confidence: float = 0.0,
     ) -> RouteSignature | None:
-        for key in meta.segment_fallback_keys(segment.block_type, segment.segment_position):
-            sig = self.signature(key, layer_id)
-            if sig is not None and sig.confidence >= min_confidence:
-                return sig
+        for key in fallback_keys(meta, segment):
+            signature = self.signature(key, layer_id)
+            if signature is not None and signature.confidence >= min_confidence:
+                return signature
         return None
 
-    def signature(self, key: tuple[str, ...], layer_id: int) -> RouteSignature | None:
-        cache_key = (key, int(layer_id))
-        if cache_key in self._signature_cache:
-            return self._signature_cache[cache_key]
-        counts = self._counts.get((key, int(layer_id)))
-        if not counts:
-            self._signature_cache[cache_key] = None
+    def signature(self, key: RouteKey, layer_id: int) -> RouteSignature | None:
+        index = (key, layer_id)
+        if index in self._cache:
+            return self._cache[index]
+        counts = self._counts.get(index)
+        num_experts = self._num_experts.get(layer_id)
+        if not counts or num_experts is None:
             return None
+        support = self._support[index]
+        alpha = self.smoothing if support < self.min_support else 0.0
         total = float(sum(counts.values()))
-        sample_count = self._sample_counts.get((key, int(layer_id)), 0)
-        if sample_count <= 0:
-            sample_count = int(round(total)) if total > 0 else len(counts)
-        num_experts = max(self._num_experts_by_layer.get(layer_id, 0), len(counts), 1)
-        smoothed = sample_count < self.min_samples and self.smoothing_alpha > 0.0
-        if smoothed:
-            denom = total + self.smoothing_alpha * num_experts
-            probs = {
-                expert: (count + self.smoothing_alpha) / denom
-                for expert, count in counts.items()
-            }
-        else:
-            probs = {expert: count / total for expert, count in counts.items()}
-        top = [
-            expert
-            for expert, _ in sorted(
-                counts.items(), key=lambda item: (-item[1], item[0])
-            )[: self.top_m]
-        ]
-        entropy = route_entropy_from_probabilities(probs.values())
-        confidence = self._confidence(key, layer_id, sample_count, entropy, num_experts)
-        miss_cost = {
-            expert: self.default_miss_cost * (1.0 + (1.0 - prob))
-            for expert, prob in probs.items()
+        denominator = total + alpha * num_experts
+        probabilities = {
+            expert_id: (float(value) + alpha) / denominator
+            for expert_id, value in counts.items()
         }
+        unseen_probability = alpha / denominator if alpha else 0.0
+        probability_vector = np.full(num_experts, unseen_probability, dtype=np.float64)
+        for expert_id, probability in probabilities.items():
+            probability_vector[expert_id] = probability
+        positive = probability_vector[probability_vector > 0]
+        entropy = float(-(positive * np.log(positive)).sum())
+        ranked = sorted(
+            range(num_experts),
+            key=lambda expert_id: (-probability_vector[expert_id], expert_id),
+        )[: self.top_m]
+        confidence = self._confidence(index, support, entropy, num_experts)
         signature = RouteSignature(
             key=key,
-            layer_id=int(layer_id),
-            expert_prob=probs,
-            top_experts=top,
-            entropy=float(entropy),
-            confidence=float(confidence),
-            miss_cost=miss_cost,
-            sample_count=int(sample_count),
-            updated_at=time.time(),
-            smoothed=smoothed,
+            layer_id=layer_id,
+            top_experts=tuple(ranked),
+            probabilities=probabilities,
+            unseen_probability=unseen_probability,
+            entropy=entropy,
+            confidence=confidence,
+            support=support,
+            smoothed=bool(alpha),
             statistics_mode=self.statistics_mode,
         )
-        self._signature_cache[cache_key] = signature
+        self._cache[index] = signature
         return signature
 
     def _confidence(
         self,
-        key: tuple[str, ...],
-        layer_id: int,
-        sample_count: int,
+        index: tuple[RouteKey, int],
+        support: int,
         entropy: float,
         num_experts: int,
     ) -> float:
-        sample_term = min(1.0, sample_count / max(1, self.min_samples))
-        max_entropy = math.log(max(2, num_experts))
-        concentration = 1.0 - min(1.0, entropy / max_entropy)
-        recent = list(self._recent.get((key, layer_id), []))
+        support_score = min(1.0, support / self.min_support)
+        concentration = 1.0 - min(1.0, entropy / math.log(max(2, num_experts)))
+        recent = self._recent[index]
         if len(recent) < 2:
             stability = 0.5
         else:
             overlaps = []
-            for a, b in zip(recent, recent[1:]):
-                union = a | b
-                overlaps.append(1.0 if not union else len(a & b) / len(union))
-            stability = float(np.mean(overlaps)) if overlaps else 0.5
-        return max(0.0, min(1.0, 0.45 * sample_term + 0.35 * concentration + 0.20 * stability))
-
-    def top_experts(
-        self,
-        meta: AgentNodeMeta,
-        layer_id: int,
-        *,
-        top_m: int | None = None,
-        min_confidence: float = 0.0,
-    ) -> list[int]:
-        sig = self.lookup(meta, layer_id, min_confidence=min_confidence)
-        if sig is None:
-            return []
-        return sig.top_experts[: (top_m or self.top_m)]
-
-    def top_experts_for_segment(
-        self,
-        meta: AgentNodeMeta,
-        segment: PromptSegment,
-        layer_id: int,
-        *,
-        top_m: int | None = None,
-        min_confidence: float = 0.0,
-    ) -> list[int]:
-        sig = self.lookup_segment(meta, segment, layer_id, min_confidence=min_confidence)
-        if sig is None:
-            return []
-        return sig.top_experts[: (top_m or self.top_m)]
-
-    def signatures(self) -> list[RouteSignature]:
-        result: list[RouteSignature] = []
-        for key, layer_id in sorted(self._counts):
-            sig = self.signature(key, layer_id)
-            if sig is not None:
-                result.append(sig)
-        return result
-
-    def to_json(self, path: str | Path) -> None:
-        output = Path(path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "top_m": self.top_m,
-            "min_samples": self.min_samples,
-            "stability_window": self.stability_window,
-            "default_miss_cost": self.default_miss_cost,
-            "signatures": [sig.to_dict() for sig in self.signatures()],
-        }
-        output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _selected_array_for_layer(record: TraceRecord, layer_id: int) -> np.ndarray:
-    per_record = _LAYER_ARRAY_CACHE.setdefault(id(record), {})
-    if layer_id not in per_record:
-        per_record[layer_id] = record.layer(layer_id).selected_array()
-    return per_record[layer_id]
-
-
-def route_entropy_from_probabilities(probabilities: Iterable[float]) -> float:
-    probs = np.asarray([p for p in probabilities if p > 0], dtype=np.float64)
-    if probs.size == 0:
-        return 0.0
-    probs = probs / probs.sum()
-    return float(-(probs * np.log(probs)).sum())
-
-
-def build_routesig_store(
-    records: Iterable[TraceRecord],
-    *,
-    top_m: int = 4,
-    min_samples: int = 32,
-    stability_window: int = 12,
-) -> RouteSigStore:
-    store = RouteSigStore(
-        top_m=top_m, min_samples=min_samples, stability_window=stability_window
-    )
-    store.update_many(records)
-    return store
+            for left, right in zip(recent, list(recent)[1:]):
+                union = left | right
+                overlaps.append(len(left & right) / len(union) if union else 1.0)
+            stability = float(np.mean(overlaps))
+        return float(0.5 * support_score + 0.3 * concentration + 0.2 * stability)

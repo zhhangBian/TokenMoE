@@ -1,165 +1,134 @@
-# TokenMoE Prompt MoE Replay Prototype
+# TokenMoE
 
-TokenMoE tests whether metadata visible before MoE routing, especially agent
-role/phase and prompt-block structure, predicts real MoE expert working sets.
-This stage is deliberately offline: it collects prompt-only vLLM routed-expert
-traces, evaluates predictors, and replays scheduler decisions. It does not
-modify vLLM's live scheduler or model outputs.
+TokenMoE is a research project on predicting Mixture-of-Experts (MoE) expert working sets before routing begins. It studies whether information already available to an agent runtime, such as node role, execution phase, tool state, and prompt structure, can complement short-term routing history.
 
-## Data
+The current repository provides the measurement and evaluation foundation for that question. It does not yet claim end-to-end serving acceleration.
 
-The external dataset download script is outside this repository:
+## Research question
 
-```bash
-python /home/youwei/bzh/dataset/download_dataset.py
+An MoE router reveals expert demand only after a token reaches each sparse
+layer. This is late for systems that page, prefetch, place, or replicate expert
+weights. Agent runtimes know the request's execution context earlier.
+
+TokenMoE asks whether that context provides a useful prior over the routed
+experts while preserving one non-negotiable rule: the model router remains
+authoritative and model outputs must not change.
+
+The project currently evaluates three explainable predictors:
+
+- global expert frequency;
+- recent routing history;
+- RouteSig, a hierarchical metadata-conditioned routing distribution.
+
+Comparisons use predict-before-update evaluation, source-group-preserving time
+splits, model-relative expert budgets, and paired bootstrap confidence
+intervals.
+
+## Repository structure
+
+```text
+tokenmoe/           schemas, vLLM traces, RouteSig, predictors, evaluation
+dataset_adapters/   converters from public corpora to admission requests
+scripts/            trace collection and offline evaluation entry points
+tests/              fast correctness and leakage-boundary tests
+docs/               data, trace, model, and report documentation
+TokenMoE-paper/     compact paper draft without unverified results
+vllm/               TokenMoE vLLM fork as a Git submodule
+idea.md             research idea and system-design direction
+openspec/           current behavioral specifications
 ```
 
-This change only edits `DATASET_LIST` in that script. Gated datasets are not
-replaced silently; failures are recorded in `logs/experiments/`.
+Datasets, traces, model weights, logs, and generated analyses are external
+artifacts and are not versioned in this repository.
 
-Convert raw datasets into local prompt workloads:
+## Installation
+
+Python 3.10 or newer is required.
 
 ```bash
-PYTHONPATH=. python -m dataset_adapters.convert_all --limit 256
+git submodule update --init vllm
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev,datasets]'
 ```
 
-Outputs are written under
-`/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/` with manifests under
-`/home/youwei/bzh/dataset/tokenmoe_artifacts/manifests/`.
+Trace collection additionally requires building the local `vllm/` fork for
+the machine's CUDA and PyTorch versions.
 
-1k-scale conversion keeps the 256-record baselines by suffixing outputs
-(the manifest name is derived from the output filename):
+## Data preparation
+
+Use environment variables rather than repository-relative data paths:
 
 ```bash
-for name in sharegpt lmsys swe_agent opencode openmath; do
-  PYTHONPATH=. python -m dataset_adapters.$name --limit 1000 \
-    --output /home/youwei/bzh/project/dataset/tokenmoe_artifacts/workloads/${name}_prompt_workloads_1k.jsonl
-done
+export TOKENMOE_DATASET_ROOT=/path/to/datasets
+export TOKENMOE_ARTIFACT_ROOT=/path/to/tokenmoe_artifacts
+PYTHONPATH=. python -m dataset_adapters.convert_all --limit 1000 \
+  --dataset-root "$TOKENMOE_DATASET_ROOT" \
+  --output-dir "$TOKENMOE_ARTIFACT_ROOT/workloads"
 ```
 
-The SWE-agent adapter emits enriched pre-router metadata
-(`trajectory_phase`, `tool_type`, `event_outcome`, `dag_depth`,
-`group_local_step_index`, `on_critical_path`; heuristic version
-`swe_agent.metadata_heuristics.v1` recorded in the manifest). Underivable
-fields are marked unavailable rather than defaulted.
+Each converter writes a workload JSONL and a provenance manifest. A workload
+record represents a prompt immediately before target-model generation. Target
+answers and the current agent action are excluded from the prompt.
 
-## vLLM Trace Collection
+See [docs/datasets.md](docs/datasets.md) for supported sources and the external
+artifact layout.
 
-The active collector is vLLM routed-experts only:
+## Collecting vLLM traces
+
+The collector accepts only routed-expert output from the TokenMoE vLLM fork and
+writes the current `tokenmoe.trace.v3` format.
 
 ```bash
-source /home/youwei/bzh/venvs/tokenmoe-vllm/bin/activate
-cd /tmp
-TOKENMOE_ROOT=/home/youwei/bzh/project/TokenMoE
-CUDA_VISIBLE_DEVICES=0,1 \
-PYTHONPATH=$TOKENMOE_ROOT/vllm:$TOKENMOE_ROOT \
-python -u $TOKENMOE_ROOT/scripts/collect_traces.py \
-  --workload /home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/sharegpt_prompt_workloads.jsonl \
-  --model /home/youwei/bzh/model/Qwen/Qwen3-30B-A3B \
-  --limit 256 \
-  --batch-size 32 \
+export TOKENMOE_ROOT="$(pwd)"
+export TOKENMOE_MODEL=/path/to/a/supported-moe-model
+
+PYTHONPATH="$TOKENMOE_ROOT/vllm:$TOKENMOE_ROOT" \
+python scripts/collect_traces.py \
+  --workload "$TOKENMOE_ARTIFACT_ROOT/workloads/swe_agent_prompt_workloads.jsonl" \
+  --model "$TOKENMOE_MODEL" \
+  --output "$TOKENMOE_ARTIFACT_ROOT/traces/model_swe_agent.jsonl" \
+  --env-report "$TOKENMOE_ARTIFACT_ROOT/logs/model_swe_agent.json" \
+  --limit 1000 \
+  --batch-size 16 \
   --tensor-parallel-size 2 \
   --expert-parallel on \
   --dtype bfloat16 \
-  --max-model-len 10240 \
-  --gpu-memory-utilization 0.90 \
-  --output /home/youwei/bzh/dataset/tokenmoe_artifacts/traces/qwen3_sharegpt.jsonl \
-  --env-report /home/youwei/bzh/dataset/tokenmoe_artifacts/logs/qwen3_sharegpt_env.json
+  --max-model-len 8192 \
+  --gpu-memory-utilization 0.9
 ```
 
-DeepSeek cross-model profile:
+Router scores are enabled by default. Use `--no-router-scores` only when an
+ID-only trace is intentional; the trace will record the explicit reason for
+missing scores. `--resume` validates an existing JSONL file and appends only
+missing request IDs.
 
-```bash
-source /home/youwei/bzh/venvs/tokenmoe-vllm/bin/activate
-cd /tmp
-TOKENMOE_ROOT=/home/youwei/bzh/project/TokenMoE
-CUDA_VISIBLE_DEVICES=1 \
-PYTHONPATH=$TOKENMOE_ROOT/vllm:$TOKENMOE_ROOT \
-python -u $TOKENMOE_ROOT/scripts/collect_traces.py \
-  --workload /home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/swe_agent_prompt_workloads.jsonl \
-  --model /home/youwei/bzh/model/deepseek-ai/DeepSeek-V2-Lite-Chat \
-  --limit 256 \
-  --batch-size 32 \
-  --tensor-parallel-size 1 \
-  --expert-parallel on \
-  --dtype bfloat16 \
-  --max-model-len 2048 \
-  --gpu-memory-utilization 0.90 \
-  --trust-remote-code \
-  --output /home/youwei/bzh/dataset/tokenmoe_artifacts/traces/deepseek_swe_agent.jsonl \
-  --env-report /home/youwei/bzh/dataset/tokenmoe_artifacts/logs/deepseek_swe_agent_env.json
-```
-
-The collector rejects dense models, non-vLLM backends, fallback traces, missing
-MoE layer IDs, mixed prompt/decode routing, and missing explicit launch profile
-settings.
-
-### Router-score capture (trace schema v3)
-
-The local vLLM fork supports capturing per-token router scores alongside
-routed expert IDs behind `enable_return_routed_expert_scores` (CLI:
-`--enable-return-routed-expert-scores`). Pass `--router-scores on` to
-`collect_traces.py` to emit `tokenmoe.trace.v3` records with aligned
-`router_scores` and per-model `router_score_semantics`
-(Qwen3-MoE: `softmax_topk_renormalized`; DeepSeek-V2:
-`softmax_topk_scaled_unnormalized`). If score capture is unsupported for a
-config, collection fails closed to ID-only capture and records an explicit
-`router_scores_unavailable_reason`. v2 and v3 traces cannot be mixed in one
-analysis run. Add `_1k`/`_5k` suffixes to `--output`/`--env-report` paths so
-256-record baselines are preserved, e.g.
-`traces/qwen3_sharegpt_1k.jsonl` with `--limit 1000 --router-scores on`.
-
-## Analysis
-
-After real traces are collected:
+## Evaluation
 
 ```bash
 PYTHONPATH=. python scripts/analyze_traces.py \
-  --traces /home/youwei/bzh/dataset/tokenmoe_artifacts/traces/qwen3_sharegpt.jsonl \
-  --workload /home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/sharegpt_prompt_workloads.jsonl \
-  --analysis-dir /home/youwei/bzh/dataset/tokenmoe_artifacts/analysis/qwen3_sharegpt \
-  --report-dir /home/youwei/bzh/dataset/tokenmoe_artifacts/reports/qwen3_sharegpt
+  --traces "$TOKENMOE_ARTIFACT_ROOT/traces/model_swe_agent.jsonl" \
+  --output "$TOKENMOE_ARTIFACT_ROOT/analysis/model_swe_agent.json"
 ```
 
-Reports separate global/temporal/RouteSig/oracle predictors and label claim
-scopes as real-agent metadata, chat/prompt-only, or domain-instruction.
-Prefetch replay and EPLB replay are excluded from current-stage validation.
+One analysis file must contain a single model and one strict trace schema. The
+output contains both group-preserving time splits, all expert budgets, weighted
+coverage when router scores exist, and confidence intervals against global and
+temporal baselines.
 
-Predictors evaluated online (predict-before-update):
-
-- `global_frequency`, `lru_expert_cache`, `sequence_position_frequency`,
-  `temporal_window_frequency`, `routesig` — baselines.
-- `routesig_score_weighted` — RouteSig with router-score-mass statistics
-  (only when all train traces are v3 with scores).
-- `hybrid_routesig_temporal` — per-layer gating on train-split
-  delta-vs-global plus confidence-calibrated convex fusion of RouteSig and
-  temporal; per-layer gate decisions are persisted in `gate_report`.
-- `learned_ranker` — logistic regression over pre-router feature-group
-  probabilities; no post-router inputs.
-- `oracle_upper_bound` — reported separately, never as a prediction result.
-
-Analysis artifacts (`analysis/locality_metrics.json`) include bootstrap 95%
-CIs (`delta_vs` on every predictor row, >=1000 group-level resamples), a
-second group-preserving time split (`prediction_second_split`,
-train fraction 0.5), the metadata ablation matrix (`metadata_ablations`:
-full / -role / -phase / -tool_type / -block_type / -positions / length_only /
-temporal_only / routesig_only at the 2x budget), per-layer signal maps
-(`per_layer_signal_map`), and `weighted_coverage` computed from v3 router
-scores (explicitly marked unavailable for v2 traces).
-
-## Validation
-
-Fast logic tests:
+## Validation and claim boundary
 
 ```bash
-PYTHONPATH=. pytest -q tests
+pytest -q
+openspec validate --all --strict
 ```
 
-Completion evidence still requires real vLLM MoE runs: Qwen3-30B-A3B over the
-five workload files and DeepSeek-V2-Lite-Chat over ShareGPT plus SWE-agent
-workloads. Mock, synthetic, deterministic, and unit traces are not sufficient.
-Validated run logs are kept under `logs/experiments/`; trace environment
-reports are kept under `/home/youwei/bzh/dataset/tokenmoe_artifacts/logs/`.
+Passing unit tests establishes schema, alignment, online-update, and data
+leakage boundaries. It does not establish the research hypothesis. A TokenMoE
+systems claim additionally requires real MoE traces from multiple models,
+statistically supported gains over temporal history, capture-on/off output
+equivalence, and measured runtime integration.
 
-Next-stage work: online expert prefetch, vLLM scheduler modification, and
-proactive EPLB replica placement.
+The current implementation deliberately contains no prefetch, scheduler, or
+expert-placement simulator. Those components should be implemented only after
+the predictive-signal gate is supported by real traces.

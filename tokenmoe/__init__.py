@@ -1,4 +1,4 @@
-"""TokenMoE prompt-routed MoE trace and replay utilities."""
+"""Agent-conditioned routed-expert tracing and evaluation."""
 
 from tokenmoe.prediction import PredictedExpertSet
 from tokenmoe.schema import AgentNodeMeta, PromptSegment, WorkloadRecord

@@ -1,316 +1,242 @@
+"""Canonical request schema for TokenMoE trace collection."""
+
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 
-WORKLOAD_SCHEMA_V1 = "tokenmoe.workload.v1"
-WORKLOAD_SCHEMA_V2 = "tokenmoe.workload.v2"
+WORKLOAD_SCHEMA = "tokenmoe.workload.v2"
 
 CLAIM_SCOPE_REAL_AGENT = "real_agent_metadata"
 CLAIM_SCOPE_CHAT = "chat_prompt_only"
 CLAIM_SCOPE_DOMAIN = "domain_instruction"
-CLAIM_SCOPE_SYNTHETIC = "synthetic"
-
-REQUIRED_AGENT_META_FIELDS = (
-    "request_id",
-    "agent_id",
-    "role",
-    "phase",
-    "tool_type",
-    "graph_node_type",
-    "prompt_block_types",
-)
+CLAIM_SCOPES = frozenset({CLAIM_SCOPE_REAL_AGENT, CLAIM_SCOPE_CHAT, CLAIM_SCOPE_DOMAIN})
 
 
-@dataclass(frozen=True)
+def _required_text(data: dict[str, Any], key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string")
+    return value
+
+
+def _optional_text(value: Any, key: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be null or a non-empty string")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
 class AgentNodeMeta:
-    """Metadata visible before an agent LLM request reaches the MoE router."""
+    """Metadata known before an LLM request reaches the MoE router."""
 
     request_id: str
     agent_id: str
     role: str
     phase: str
-    tool_type: str | None
     graph_node_type: str
-    prompt_block_types: list[str]
-    ready_time: float = 0.0
-    deadline: float | None = None
-    run_probability: float = 1.0
-    criticality: float = 1.0
-    # Enriched agent metadata (heuristic-derived for SWE-agent; None when the
-    # source dataset cannot provide them).
+    prompt_block_types: tuple[str, ...]
+    tool_type: str | None = None
     trajectory_phase: str | None = None
     event_outcome: str | None = None
     dag_depth: int | None = None
     group_local_step_index: int | None = None
     on_critical_path: bool | None = None
 
+    def __post_init__(self) -> None:
+        for name in ("request_id", "agent_id", "role", "phase", "graph_node_type"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} must be non-empty")
+        if not self.prompt_block_types or any(
+            not item for item in self.prompt_block_types
+        ):
+            raise ValueError("prompt_block_types must contain non-empty strings")
+        for name in ("dag_depth", "group_local_step_index"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "AgentNodeMeta":
-        missing = [field for field in REQUIRED_AGENT_META_FIELDS if field not in data]
-        if missing:
-            raise ValueError(f"AgentNodeMeta missing required fields: {missing}")
-        prompt_block_types = data["prompt_block_types"]
-        if isinstance(prompt_block_types, str):
-            prompt_block_types = [prompt_block_types]
-        if not isinstance(prompt_block_types, list):
-            raise TypeError("prompt_block_types must be a list[str] or string")
+        block_types = data.get("prompt_block_types")
+        if not isinstance(block_types, list) or not all(
+            isinstance(item, str) and item for item in block_types
+        ):
+            raise ValueError("prompt_block_types must be a non-empty list[str]")
+        critical_path = data.get("on_critical_path")
+        if critical_path is not None and not isinstance(critical_path, bool):
+            raise TypeError("on_critical_path must be bool or null")
         return cls(
-            request_id=str(data["request_id"]),
-            agent_id=str(data["agent_id"]),
-            role=str(data["role"]),
-            phase=str(data["phase"]),
-            tool_type=None
-            if data.get("tool_type") in (None, "", "null")
-            else str(data["tool_type"]),
-            graph_node_type=str(data["graph_node_type"]),
-            prompt_block_types=[str(item) for item in prompt_block_types],
-            ready_time=float(data.get("ready_time", 0.0)),
-            deadline=None
-            if data.get("deadline") in (None, "", "null")
-            else float(data["deadline"]),
-            run_probability=float(data.get("run_probability", 1.0)),
-            criticality=float(data.get("criticality", 1.0)),
-            trajectory_phase=None
-            if data.get("trajectory_phase") in (None, "", "null")
-            else str(data["trajectory_phase"]),
-            event_outcome=None
-            if data.get("event_outcome") in (None, "", "null")
-            else str(data["event_outcome"]),
-            dag_depth=None
-            if data.get("dag_depth") in (None, "", "null")
-            else int(data["dag_depth"]),
-            group_local_step_index=None
-            if data.get("group_local_step_index") in (None, "", "null")
-            else int(data["group_local_step_index"]),
-            on_critical_path=None
-            if data.get("on_critical_path") in (None, "", "null")
-            else bool(data["on_critical_path"]),
+            request_id=_required_text(data, "request_id"),
+            agent_id=_required_text(data, "agent_id"),
+            role=_required_text(data, "role"),
+            phase=_required_text(data, "phase"),
+            graph_node_type=_required_text(data, "graph_node_type"),
+            prompt_block_types=tuple(block_types),
+            tool_type=_optional_text(data.get("tool_type"), "tool_type"),
+            trajectory_phase=_optional_text(
+                data.get("trajectory_phase"), "trajectory_phase"
+            ),
+            event_outcome=_optional_text(data.get("event_outcome"), "event_outcome"),
+            dag_depth=None if data.get("dag_depth") is None else int(data["dag_depth"]),
+            group_local_step_index=(
+                None
+                if data.get("group_local_step_index") is None
+                else int(data["group_local_step_index"])
+            ),
+            on_critical_path=critical_path,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "request_id": self.request_id,
+            "agent_id": self.agent_id,
+            "role": self.role,
+            "phase": self.phase,
+            "graph_node_type": self.graph_node_type,
+            "prompt_block_types": list(self.prompt_block_types),
+            "tool_type": self.tool_type,
+            "trajectory_phase": self.trajectory_phase,
+            "event_outcome": self.event_outcome,
+            "dag_depth": self.dag_depth,
+            "group_local_step_index": self.group_local_step_index,
+            "on_critical_path": self.on_critical_path,
+        }
 
     @property
     def block_type_key(self) -> str:
-        if not self.prompt_block_types:
-            return "none"
         return "+".join(self.prompt_block_types)
 
-    def fallback_keys(self) -> list[tuple[str, ...]]:
-        """Return RouteSig lookup keys from specific to global."""
 
-        block = self.block_type_key
-        return [
-            (self.agent_id, self.role, self.phase, block),
-            (self.role, self.phase, block),
-            (self.role, self.phase),
-            (self.role,),
-            ("global",),
-        ]
-
-    def segment_fallback_keys(
-        self, block_type: str, segment_position: int | str | None
-    ) -> list[tuple[str, ...]]:
-        """Return segment-aware RouteSig lookup keys from specific to global.
-
-        Order is fixed by the tokenmoe-route-signature spec. Enriched levels
-        (trajectory_phase / tool_type) are skipped when the workload does not
-        provide those fields.
-        """
-
-        block = str(block_type or self.block_type_key or "unknown")
-        position = str(segment_position if segment_position is not None else "unknown")
-        keys: list[tuple[str, ...]] = []
-        if self.trajectory_phase and self.tool_type:
-            keys.append(
-                (
-                    self.agent_id,
-                    self.role,
-                    self.trajectory_phase,
-                    self.tool_type,
-                    block,
-                    position,
-                )
-            )
-            keys.append(
-                (self.role, self.trajectory_phase, self.tool_type, block, position)
-            )
-        if self.trajectory_phase:
-            keys.append((self.role, self.trajectory_phase, block, position))
-        keys.extend(
-            [
-                (self.role, self.phase, block, position),
-                (self.role, self.phase, block),
-                (self.role, block),
-                (block,),
-                (self.role, self.phase),
-                (self.role,),
-                ("global",),
-            ]
-        )
-        return keys
-
-    def group_key(self, level: str) -> str:
-        if level == "agent":
-            return self.agent_id
-        if level == "role":
-            return self.role
-        if level == "phase":
-            return self.phase
-        if level == "role_phase":
-            return f"{self.role}/{self.phase}"
-        if level == "block":
-            return self.block_type_key
-        if level == "graph_node_type":
-            return self.graph_node_type
-        raise ValueError(f"unknown group level: {level}")
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PromptSegment:
-    """A semantically typed prompt block with character and optional token span."""
+    """A typed prompt block and its character/token span."""
 
     segment_id: str
     block_type: str
-    segment_position: int
+    position: int
     char_start: int
     char_end: int
     token_start: int | None = None
     token_end: int | None = None
-    alignment_status: str = "char_span_only"
     alignment_error: str | None = None
-    text_sha1: str | None = None
+
+    def validate(self, prompt: str, token_count: int | None = None) -> None:
+        if not self.segment_id or not self.block_type:
+            raise ValueError("segment_id and block_type must be non-empty")
+        if self.position < 0:
+            raise ValueError("segment position must be non-negative")
+        if not 0 <= self.char_start < self.char_end <= len(prompt):
+            raise ValueError(f"invalid character span for {self.segment_id}")
+        if (self.token_start is None) != (self.token_end is None):
+            raise ValueError(f"partial token span for {self.segment_id}")
+        if self.token_start is not None:
+            assert self.token_end is not None
+            upper = token_count if token_count is not None else self.token_end
+            if not 0 <= self.token_start < self.token_end <= upper:
+                raise ValueError(f"invalid token span for {self.segment_id}")
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "PromptSegment":
         return cls(
-            segment_id=str(data["segment_id"]),
-            block_type=str(data["block_type"]),
-            segment_position=int(data.get("segment_position", 0)),
+            segment_id=_required_text(data, "segment_id"),
+            block_type=_required_text(data, "block_type"),
+            position=int(data["position"]),
             char_start=int(data["char_start"]),
             char_end=int(data["char_end"]),
-            token_start=None
-            if data.get("token_start") in (None, "", "null")
-            else int(data["token_start"]),
-            token_end=None
-            if data.get("token_end") in (None, "", "null")
-            else int(data["token_end"]),
-            alignment_status=str(data.get("alignment_status", "char_span_only")),
-            alignment_error=None
-            if data.get("alignment_error") in (None, "", "null")
-            else str(data["alignment_error"]),
-            text_sha1=None
-            if data.get("text_sha1") in (None, "", "null")
-            else str(data["text_sha1"]),
+            token_start=(
+                None if data.get("token_start") is None else int(data["token_start"])
+            ),
+            token_end=None if data.get("token_end") is None else int(data["token_end"]),
+            alignment_error=_optional_text(
+                data.get("alignment_error"), "alignment_error"
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "segment_id": self.segment_id,
+            "block_type": self.block_type,
+            "position": self.position,
+            "char_start": self.char_start,
+            "char_end": self.char_end,
+            "token_start": self.token_start,
+            "token_end": self.token_end,
+            "alignment_error": self.alignment_error,
+        }
 
     @property
     def token_count(self) -> int:
         if self.token_start is None or self.token_end is None:
             return 0
-        return max(0, self.token_end - self.token_start)
-
-    def validate(self, prompt: str) -> None:
-        if self.char_start < 0 or self.char_end < self.char_start:
-            raise ValueError(f"invalid char span for segment {self.segment_id}")
-        if self.char_end > len(prompt):
-            raise ValueError(f"segment {self.segment_id} extends past prompt length")
-        if (self.token_start is None) != (self.token_end is None):
-            raise ValueError(f"segment {self.segment_id} has a partial token span")
-        if self.token_start is not None and self.token_end is not None:
-            if self.token_start < 0 or self.token_end < self.token_start:
-                raise ValueError(f"invalid token span for segment {self.segment_id}")
+        return self.token_end - self.token_start
 
 
-def default_prompt_segment(prompt: str, block_type: str = "prompt") -> PromptSegment:
-    return PromptSegment(
-        segment_id="prompt-000",
-        block_type=block_type,
-        segment_position=0,
-        char_start=0,
-        char_end=len(prompt),
-        alignment_status="legacy_unsegmented",
-    )
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WorkloadRecord:
-    """One normalized agent request used by trace collection and replay."""
+    """One actual LLM admission request before tokenization by vLLM."""
 
     request_id: str
     workflow: str
     prompt: str
     meta: AgentNodeMeta
-    dependencies: list[str] = field(default_factory=list)
-    source: str = "synthetic"
-    expected_output_tokens: int = 16
-    schema_version: str = WORKLOAD_SCHEMA_V2
-    prompt_segments: list[PromptSegment] = field(default_factory=list)
-    source_dataset: str | None = None
-    source_index: int | str | None = None
-    source_group_id: str | None = None
+    prompt_segments: tuple[PromptSegment, ...]
+    source_dataset: str
+    source_index: int | str
+    source_group_id: str
+    claim_scope: str
     timestamp: str | float | int | None = None
-    claim_scope: str = CLAIM_SCOPE_SYNTHETIC
-    unavailable_fields: list[str] = field(default_factory=list)
-    dag_available: bool = False
-    dependency_edges: list[tuple[str, str]] = field(default_factory=list)
+    dependencies: tuple[str, ...] = field(default_factory=tuple)
+    schema_version: str = WORKLOAD_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema_version != WORKLOAD_SCHEMA:
+            raise ValueError(
+                f"unsupported workload schema {self.schema_version!r}; "
+                f"expected {WORKLOAD_SCHEMA!r}"
+            )
+        if self.request_id != self.meta.request_id:
+            raise ValueError("record and metadata request IDs must match")
+        if not self.prompt:
+            raise ValueError("prompt must be non-empty")
+        if not self.prompt_segments:
+            raise ValueError("prompt_segments must be non-empty")
+        if self.claim_scope not in CLAIM_SCOPES:
+            raise ValueError(f"unsupported claim_scope {self.claim_scope!r}")
+        for segment in self.prompt_segments:
+            segment.validate(self.prompt)
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "WorkloadRecord":
-        meta_data = data.get("meta", data.get("agent_node_meta", data))
-        meta = AgentNodeMeta.from_mapping(meta_data)
-        request_id = str(data.get("request_id", meta.request_id))
-        if request_id != meta.request_id:
-            meta = AgentNodeMeta.from_mapping({**meta.to_dict(), "request_id": request_id})
-        dependencies = data.get("dependencies", [])
-        if dependencies is None:
-            dependencies = []
-        prompt = str(data["prompt"])
-        raw_segments = data.get("prompt_segments", data.get("segments", []))
-        prompt_segments = [
-            PromptSegment.from_mapping(item) for item in raw_segments
-        ]
-        if not prompt_segments:
-            prompt_segments = [default_prompt_segment(prompt, meta.block_type_key)]
-        for segment in prompt_segments:
-            segment.validate(prompt)
-        dependency_edges = []
-        for edge in data.get("dependency_edges", []) or []:
-            if isinstance(edge, dict):
-                dependency_edges.append((str(edge["from"]), str(edge["to"])))
-            else:
-                src, dst = edge
-                dependency_edges.append((str(src), str(dst)))
-        return cls(
-            request_id=request_id,
-            workflow=str(data.get("workflow", "unknown")),
-            prompt=prompt,
-            meta=meta,
-            dependencies=[str(dep) for dep in dependencies],
-            source=str(data.get("source", "synthetic")),
-            expected_output_tokens=int(data.get("expected_output_tokens", 16)),
-            schema_version=str(data.get("schema_version", WORKLOAD_SCHEMA_V1)),
-            prompt_segments=prompt_segments,
-            source_dataset=None
-            if data.get("source_dataset") in (None, "", "null")
-            else str(data["source_dataset"]),
-            source_index=data.get("source_index"),
-            source_group_id=None
-            if data.get("source_group_id") in (None, "", "null")
-            else str(data["source_group_id"]),
-            timestamp=data.get("timestamp"),
-            claim_scope=str(data.get("claim_scope", CLAIM_SCOPE_SYNTHETIC)),
-            unavailable_fields=[str(item) for item in data.get("unavailable_fields", [])],
-            dag_available=bool(data.get("dag_available", bool(dependencies))),
-            dependency_edges=dependency_edges,
+        schema = data.get("schema_version")
+        if schema != WORKLOAD_SCHEMA:
+            raise ValueError(
+                f"unsupported workload schema {schema!r}; expected {WORKLOAD_SCHEMA!r}"
+            )
+        prompt = _required_text(data, "prompt")
+        segments = tuple(
+            PromptSegment.from_mapping(item) for item in data["prompt_segments"]
         )
+        record = cls(
+            request_id=_required_text(data, "request_id"),
+            workflow=_required_text(data, "workflow"),
+            prompt=prompt,
+            meta=AgentNodeMeta.from_mapping(data["meta"]),
+            prompt_segments=segments,
+            source_dataset=_required_text(data, "source_dataset"),
+            source_index=data["source_index"],
+            source_group_id=_required_text(data, "source_group_id"),
+            claim_scope=_required_text(data, "claim_scope"),
+            timestamp=data.get("timestamp"),
+            dependencies=tuple(str(item) for item in data.get("dependencies", [])),
+            schema_version=schema,
+        )
+        return record
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -319,40 +245,36 @@ class WorkloadRecord:
             "workflow": self.workflow,
             "prompt": self.prompt,
             "meta": self.meta.to_dict(),
-            "dependencies": list(self.dependencies),
-            "source": self.source,
-            "expected_output_tokens": self.expected_output_tokens,
-            "prompt_segments": [segment.to_dict() for segment in self.prompt_segments],
+            "prompt_segments": [item.to_dict() for item in self.prompt_segments],
             "source_dataset": self.source_dataset,
             "source_index": self.source_index,
             "source_group_id": self.source_group_id,
-            "timestamp": self.timestamp,
             "claim_scope": self.claim_scope,
-            "unavailable_fields": list(self.unavailable_fields),
-            "dag_available": self.dag_available,
-            "dependency_edges": [
-                {"from": src, "to": dst} for src, dst in self.dependency_edges
-            ],
+            "timestamp": self.timestamp,
+            "dependencies": list(self.dependencies),
         }
 
 
-def read_workload_jsonl(path: str | Path) -> list[WorkloadRecord]:
-    records: list[WorkloadRecord] = []
-    with Path(path).open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
+def iter_workload_jsonl(path: str | Path) -> Iterator[WorkloadRecord]:
+    with Path(path).open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
                 continue
             try:
-                records.append(WorkloadRecord.from_mapping(json.loads(line)))
-            except Exception as exc:
-                raise ValueError(f"invalid workload record at {path}:{line_no}: {exc}") from exc
-    return records
+                yield WorkloadRecord.from_mapping(json.loads(line))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"invalid workload record at line {line_number}: {exc}"
+                ) from exc
+
+
+def read_workload_jsonl(path: str | Path) -> list[WorkloadRecord]:
+    return list(iter_workload_jsonl(path))
 
 
 def write_workload_jsonl(records: Iterable[WorkloadRecord], path: str | Path) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as f:
+    with output.open("w", encoding="utf-8") as stream:
         for record in records:
-            f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+            stream.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")

@@ -25,22 +25,18 @@ def convert(source_path, limit: int, repo_id: str):
             raw,
             ("instruction", "prompt", "question", "problem", "input", "messages"),
         )
-        response, _ = first_text(raw, ("output", "response", "answer", "completion"))
         language, _ = first_text(raw, ("language", "lang", "programming_language"))
-        group_id, group_field = first_text(raw, ("id", "problem_id", "source", "task_id"))
+        group_id, group_field = first_text(
+            raw, ("id", "problem_id", "source", "task_id")
+        )
         missing = []
         if instruction_field is None:
             missing.append("instruction")
         if group_field is None:
             missing.append("source_group_id")
-        blocks = [
-            PromptBlock("system", "Code instruction workload."),
-            PromptBlock("instruction", instruction or ""),
-        ]
+        blocks = [PromptBlock("instruction", instruction or "")]
         if language:
             blocks.append(PromptBlock("code_context", f"Language: {language}"))
-        if response:
-            blocks.append(PromptBlock("reference_answer", response))
         if not instruction:
             unavailable_fields.extend(missing)
             continue
@@ -56,17 +52,17 @@ def convert(source_path, limit: int, repo_id: str):
                 role="coder",
                 phase="act",
                 graph_node_type="domain_instruction",
-                tool_type="python" if (language or "").lower() == "python" else None,
-                unavailable_fields=missing + ["dependency_edges", "ready_times"],
             )
         )
         if len(records) >= limit:
             break
-    return records, unavailable_fields, False
+    return records, unavailable_fields
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert OpenCodeInstruct to TokenMoE prompt workloads.")
+    parser = argparse.ArgumentParser(
+        description="Convert OpenCodeInstruct to TokenMoE prompt workloads."
+    )
     run_converter(
         parser=parser,
         adapter_name="opencode",

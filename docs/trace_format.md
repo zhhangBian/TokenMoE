@@ -1,92 +1,66 @@
-# TokenMoE Trace Format
+# Trace format
 
-Current-stage trace files are JSONL with `schema_version =
-"tokenmoe.trace.v2"`. v1 readers remain for compatibility, but analysis rejects
-mixed v1/v2 inputs and rejects v1 for current-stage validation.
+TokenMoE accepts one trace format: `tokenmoe.trace.v3`, captured by the local
+vLLM fork with backend identifier `vllm-routed-experts`.
 
-## Request Record
+Each JSONL record contains one prompt admission:
 
 ```json
 {
-  "schema_version": "tokenmoe.trace.v2",
-  "request_id": "sharegpt-000001",
-  "metadata": {
-    "request_id": "sharegpt-000001",
-    "agent_id": "sharegpt-chat:assistant:conv-1",
-    "role": "assistant",
-    "phase": "chat",
-    "tool_type": null,
-    "graph_node_type": "conversation",
-    "prompt_block_types": ["system", "user_message", "assistant_message"]
-  },
-  "model_id": "/home/youwei/bzh/model/Qwen/Qwen3-30B-A3B",
+  "schema_version": "tokenmoe.trace.v3",
   "backend": "vllm-routed-experts",
-  "routing_scope": "prompt_only",
-  "backend_fallback_used": false,
-  "prompt_routing_start": 0,
-  "decode_routing_excluded": true,
-  "prompt_token_count": 128,
-  "output_token_count": 1,
-  "moe_layer_ids": [0, 1, 2],
-  "router_top_k": 8,
-  "num_experts": 128,
+  "request_id": "request-42",
+  "model_id": "/path/to/moe-model",
+  "prompt": "...",
+  "prompt_token_ids": [1, 2, 3],
+  "generated_token_ids": [4],
+  "moe_layer_ids": [1, 3],
+  "router_top_k": 2,
+  "num_experts": 64,
+  "router_score_semantics": "model_type:softmax_topk_renormalized",
+  "router_scores_unavailable_reason": null,
+  "metadata": {},
   "prompt_segments": [],
   "layers": []
 }
 ```
 
-## Prompt Segments
+## Layer data
 
-Adapters write character spans. The collector maps them to token spans with the
-same tokenizer path used by vLLM and compares token IDs with
-`RequestOutput.prompt_token_ids`.
-
-```json
-{
-  "segment_id": "instruction-001",
-  "block_type": "instruction",
-  "segment_position": 1,
-  "char_start": 17,
-  "char_end": 82,
-  "token_start": 4,
-  "token_end": 23,
-  "alignment_status": "aligned",
-  "alignment_error": null
-}
-```
-
-If alignment fails, segment-level metrics are unavailable for that record
-instead of silently treating the block as aligned.
-
-## Layer Record
-
-Each layer stores only MoE layers listed in `moe_layer_ids`:
+Each layer entry has the real model layer ID and arrays shaped
+`[prompt_tokens, router_top_k]`:
 
 ```json
 {
-  "layer_id": 0,
-  "selected_experts": [[7, 1], [2, 5]],
-  "router_scores": null,
-  "active_expert_histogram": {"1": 1, "2": 1, "5": 1, "7": 1}
+  "layer_id": 3,
+  "selected_experts": [[4, 9], [9, 12]],
+  "router_scores": [[0.63, 0.37], [0.54, 0.46]]
 }
 ```
 
-Shapes:
+`layers` must exactly match `moe_layer_ids`. Expert IDs must lie in
+`[0, num_experts)`. Scores must be finite, non-negative, and aligned with IDs.
+If scores were intentionally disabled or unavailable, every layer stores
+`router_scores: null` and the request-level unavailability reason is required.
 
-- `selected_experts`: `[prompt_tokens, router_top_k]`
-- full vLLM capture before filtering: `[tokens, hidden_layers, router_top_k]`
+## Prompt segments
 
-Dense/non-MoE layer slots are filtered or marked unavailable. They must never
-be interpreted as expert `0` activity.
+Workload character spans are aligned against the same tokenizer IDs returned by
+vLLM. A successful segment stores `token_start` and exclusive `token_end`. An
+unaligned segment stores null token bounds and a non-empty `alignment_error`;
+evaluation skips it rather than assigning routing from another span.
 
-## Validation
+## Validation boundary
 
-`scripts/analyze_traces.py` rejects:
+The reader rejects:
 
-- non-`vllm-routed-experts` backends
-- fallback traces
-- mixed schema versions
-- non-prompt-only routing
-- missing `moe_layer_ids`
-- layer IDs not present in `moe_layer_ids`
-- segment token spans that extend beyond prompt token count
+- legacy or mixed schema versions;
+- non-vLLM backends;
+- mixed models in one analysis file;
+- missing MoE layer metadata;
+- invalid Expert IDs or array shapes;
+- partially available router scores;
+- silent segment-alignment failures.
+
+Trace capture is observational. Separate capture-on/off token-equivalence tests
+are required before using a new model family or parallel configuration.

@@ -25,8 +25,9 @@ def convert(source_path, limit: int, repo_id: str):
             raw,
             ("problem", "question", "instruction", "prompt", "messages"),
         )
-        solution, _ = first_text(raw, ("solution", "answer", "output", "response"))
-        group_id, group_field = first_text(raw, ("id", "problem_id", "source", "task_id"))
+        group_id, group_field = first_text(
+            raw, ("id", "problem_id", "source", "task_id")
+        )
         missing = []
         if problem_field is None:
             missing.append("problem")
@@ -35,12 +36,7 @@ def convert(source_path, limit: int, repo_id: str):
         if not problem:
             unavailable_fields.extend(missing)
             continue
-        blocks = [
-            PromptBlock("system", "Math instruction workload."),
-            PromptBlock("instruction", problem),
-        ]
-        if solution:
-            blocks.append(PromptBlock("reference_answer", solution))
+        blocks = [PromptBlock("instruction", problem)]
         records.append(
             make_record(
                 request_id=f"openmath-{source_index:06d}",
@@ -53,16 +49,16 @@ def convert(source_path, limit: int, repo_id: str):
                 role="solver",
                 phase="solve",
                 graph_node_type="domain_instruction",
-                unavailable_fields=missing + ["dependency_edges", "ready_times"],
             )
         )
         if len(records) >= limit:
             break
-    return records, unavailable_fields, False
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert OpenMathInstruct-2 to TokenMoE prompt workloads.")
+    parser = argparse.ArgumentParser(
+        description="Convert OpenMathInstruct-2 to TokenMoE prompt workloads."
+    )
     run_converter(
         parser=parser,
         adapter_name="openmath",

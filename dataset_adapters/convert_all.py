@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,10 +20,21 @@ CONVERTERS = (
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run all TokenMoE dataset converters.")
     parser.add_argument("--limit", type=int, default=256)
-    parser.add_argument("--dataset-root", default="/home/youwei/bzh/dataset")
+    parser.add_argument(
+        "--dataset-root",
+        default=os.environ.get("TOKENMOE_DATASET_ROOT", "/home/youwei/bzh/dataset"),
+    )
     parser.add_argument(
         "--output-dir",
-        default="/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads",
+        default=str(
+            Path(
+                os.environ.get(
+                    "TOKENMOE_ARTIFACT_ROOT",
+                    "/home/youwei/bzh/dataset/tokenmoe_artifacts",
+                )
+            )
+            / "workloads"
+        ),
     )
     args = parser.parse_args()
 

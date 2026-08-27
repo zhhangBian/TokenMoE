@@ -6,3 +6,6 @@
 *.log
 *.out
 *.toc
+
+!main.tex
+main.*

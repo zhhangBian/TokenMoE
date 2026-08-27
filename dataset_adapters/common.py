@@ -1,8 +1,9 @@
+"""Shared, provenance-preserving dataset conversion utilities."""
+
 from __future__ import annotations
 
 import argparse
 import gzip
-import hashlib
 import json
 import os
 import sys
@@ -14,29 +15,25 @@ from tokenmoe.schema import (
     CLAIM_SCOPE_CHAT,
     CLAIM_SCOPE_DOMAIN,
     CLAIM_SCOPE_REAL_AGENT,
-    WORKLOAD_SCHEMA_V2,
     AgentNodeMeta,
     PromptSegment,
     WorkloadRecord,
+    write_workload_jsonl,
 )
 
 
 DATASET_ROOT = Path(os.environ.get("TOKENMOE_DATASET_ROOT", "/home/youwei/bzh/dataset"))
 ARTIFACT_ROOT = Path(
     os.environ.get(
-        "TOKENMOE_ARTIFACT_ROOT",
-        "/home/youwei/bzh/dataset/tokenmoe_artifacts",
+        "TOKENMOE_ARTIFACT_ROOT", "/home/youwei/bzh/dataset/tokenmoe_artifacts"
     )
 )
 WORKLOAD_OUTPUT_DIR = ARTIFACT_ROOT / "workloads"
 MANIFEST_DIR = ARTIFACT_ROOT / "manifests"
-FIELD_MAPPING_VERSION = "tokenmoe.external-adapter.v1"
-
-JSON_SUFFIXES = {".json", ".jsonl", ".gz"}
-PARQUET_SUFFIXES = {".parquet"}
+FIELD_MAPPING_VERSION = "tokenmoe.admission-request.v2"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PromptBlock:
     block_type: str
     text: str
@@ -51,127 +48,123 @@ def candidate_data_files(path: Path) -> list[Path]:
         return [path]
     if not path.exists():
         return []
-    files = [
-        item
-        for item in path.rglob("*")
-        if item.is_file()
-        and item.name not in {".gitattributes"}
-        and (
-            item.suffix in JSON_SUFFIXES
-            or item.suffix in PARQUET_SUFFIXES
-            or item.name.endswith(".jsonl.gz")
-        )
-    ]
-    files.sort(key=lambda item: (0 if "train" in item.name.lower() else 1, len(str(item)), str(item)))
-    return files
+    suffixes = (".json", ".jsonl", ".jsonl.gz", ".parquet")
+    return sorted(
+        (
+            item
+            for item in path.rglob("*")
+            if item.is_file() and item.name.endswith(suffixes)
+        ),
+        key=lambda item: (
+            "train" not in item.name.lower(),
+            len(str(item)),
+            str(item),
+        ),
+    )
 
 
-def iter_json_records(path: Path) -> Iterator[dict[str, Any]]:
+def _iter_json(path: Path) -> Iterator[dict[str, Any]]:
     opener = gzip.open if path.name.endswith(".gz") else open
-    if path.suffix == ".jsonl" or path.name.endswith(".jsonl.gz"):
-        with opener(path, "rt", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    value = json.loads(line)
-                    if isinstance(value, dict):
-                        yield value
+    if path.name.endswith((".jsonl", ".jsonl.gz")):
+        with opener(path, "rt", encoding="utf-8") as stream:
+            for line in stream:
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    yield value
         return
-    with opener(path, "rt", encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                yield item
-    elif isinstance(data, dict):
+    with opener(path, "rt", encoding="utf-8") as stream:
+        value = json.load(stream)
+    if isinstance(value, list):
+        yield from (item for item in value if isinstance(item, dict))
+    elif isinstance(value, dict):
         for key in ("data", "train", "records", "examples"):
-            value = data.get(key)
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        yield item
+            if isinstance(value.get(key), list):
+                yield from (item for item in value[key] if isinstance(item, dict))
                 return
-        yield data
+        yield value
 
 
-def iter_parquet_records(path: Path) -> Iterator[dict[str, Any]]:
+def _iter_parquet(path: Path) -> Iterator[dict[str, Any]]:
     try:
-        import pyarrow.parquet as pq
+        import pyarrow.parquet as parquet
     except ImportError as exc:
-        raise RuntimeError(f"pyarrow is required to read parquet dataset file {path}") from exc
-    table = pq.read_table(path)
-    for row in table.to_pylist():
-        if isinstance(row, dict):
-            yield row
+        raise RuntimeError("install TokenMoE with the 'datasets' extra") from exc
+    yield from (
+        row for row in parquet.read_table(path).to_pylist() if isinstance(row, dict)
+    )
 
 
-def iter_raw_records(source_path: Path, limit: int | None = None) -> Iterator[tuple[int, Path, dict[str, Any]]]:
-    count = 0
-    for file_path in candidate_data_files(source_path):
-        if file_path.suffix in PARQUET_SUFFIXES:
-            iterator = iter_parquet_records(file_path)
-        elif file_path.suffix in JSON_SUFFIXES or file_path.name.endswith(".jsonl.gz"):
-            iterator = iter_json_records(file_path)
-        else:
-            continue
-        for record in iterator:
-            yield count, file_path, record
-            count += 1
-            if limit is not None and count >= limit:
+def iter_raw_records(
+    source_path: Path, limit: int | None = None
+) -> Iterator[tuple[int, Path, dict[str, Any]]]:
+    index = 0
+    for path in candidate_data_files(source_path):
+        records = _iter_parquet(path) if path.suffix == ".parquet" else _iter_json(path)
+        for record in records:
+            yield index, path, record
+            index += 1
+            if limit is not None and index >= limit:
                 return
 
 
 def text_or_none(value: Any) -> str | None:
     if value is None:
         return None
-    if isinstance(value, (list, dict)):
-        text = json.dumps(value, ensure_ascii=False)
-    else:
-        text = str(value)
-    text = text.strip()
+    text = (
+        json.dumps(value, ensure_ascii=False)
+        if isinstance(value, (list, dict))
+        else str(value)
+    ).strip()
     return text or None
 
 
-def first_text(data: dict[str, Any], keys: Iterable[str]) -> tuple[str | None, str | None]:
+def first_text(
+    data: dict[str, Any], keys: Iterable[str]
+) -> tuple[str | None, str | None]:
     for key in keys:
-        value = text_or_none(data.get(key))
-        if value:
-            return value, key
+        if text := text_or_none(data.get(key)):
+            return text, key
     return None, None
 
 
-def build_prompt(blocks: list[PromptBlock]) -> tuple[str, list[PromptSegment]]:
+_BLOCK_PREFIXES = {
+    "user_message": "User:\n",
+    "assistant_message": "Assistant:\n",
+    "tool_result": "Tool:\n",
+    "trajectory_event": "Assistant:\n",
+}
+
+
+def build_prompt(
+    blocks: Iterable[PromptBlock],
+) -> tuple[str, tuple[PromptSegment, ...]]:
     prompt = ""
     segments: list[PromptSegment] = []
-    position = 0
-    for block in blocks:
-        text = block.text.strip()
-        if not text:
-            continue
-        rendered = f"[{block.block_type}]\n{text}\n"
+    for position, block in enumerate(block for block in blocks if block.text.strip()):
+        if prompt:
+            prompt += "\n\n"
+        rendered = _BLOCK_PREFIXES.get(block.block_type, "") + block.text.strip()
         start = len(prompt)
         prompt += rendered
-        end = len(prompt)
         segments.append(
             PromptSegment(
                 segment_id=f"{block.block_type}-{position:03d}",
                 block_type=block.block_type,
-                segment_position=position,
+                position=position,
                 char_start=start,
-                char_end=end,
-                alignment_status="char_span_only",
-                text_sha1=hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:16],
+                char_end=len(prompt),
             )
         )
-        position += 1
-    return prompt, segments
+    if not segments:
+        raise ValueError("cannot build an empty prompt")
+    return prompt, tuple(segments)
 
 
 def make_record(
     *,
     request_id: str,
     workflow: str,
-    blocks: list[PromptBlock],
+    blocks: Iterable[PromptBlock],
     source_dataset: str,
     source_index: int | str,
     source_group_id: str,
@@ -180,12 +173,8 @@ def make_record(
     phase: str,
     graph_node_type: str = "request",
     tool_type: str | None = None,
-    ready_time: float = 0.0,
     timestamp: str | float | int | None = None,
-    dependencies: list[str] | None = None,
-    dependency_edges: list[tuple[str, str]] | None = None,
-    unavailable_fields: list[str] | None = None,
-    dag_available: bool = False,
+    dependencies: Iterable[str] = (),
     trajectory_phase: str | None = None,
     event_outcome: str | None = None,
     dag_depth: int | None = None,
@@ -193,16 +182,14 @@ def make_record(
     on_critical_path: bool | None = None,
 ) -> WorkloadRecord:
     prompt, segments = build_prompt(blocks)
-    block_types = [segment.block_type for segment in segments] or ["prompt"]
     meta = AgentNodeMeta(
         request_id=request_id,
         agent_id=f"{workflow}:{role}:{source_group_id}",
         role=role,
         phase=phase,
-        tool_type=tool_type,
         graph_node_type=graph_node_type,
-        prompt_block_types=block_types,
-        ready_time=ready_time,
+        prompt_block_types=tuple(segment.block_type for segment in segments),
+        tool_type=tool_type,
         trajectory_phase=trajectory_phase,
         event_outcome=event_outcome,
         dag_depth=dag_depth,
@@ -214,30 +201,14 @@ def make_record(
         workflow=workflow,
         prompt=prompt,
         meta=meta,
-        dependencies=list(dependencies or []),
-        source=source_dataset,
-        expected_output_tokens=1,
-        schema_version=WORKLOAD_SCHEMA_V2,
         prompt_segments=segments,
         source_dataset=source_dataset,
         source_index=source_index,
         source_group_id=source_group_id,
-        timestamp=timestamp,
         claim_scope=claim_scope,
-        unavailable_fields=list(unavailable_fields or []),
-        dag_available=dag_available,
-        dependency_edges=list(dependency_edges or []),
+        timestamp=timestamp,
+        dependencies=tuple(dependencies),
     )
-
-
-def write_jsonl(records: Iterable[WorkloadRecord], path: Path) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with path.open("w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
-            count += 1
-    return count
 
 
 def write_manifest(
@@ -247,19 +218,13 @@ def write_manifest(
     source_path: Path,
     output_path: Path,
     sample_count: int,
-    conversion_command: list[str],
-    unavailable_fields: list[str],
+    unavailable_fields: Iterable[str],
     claim_scope: str,
-    dag_available: bool,
-    license_access_status: str = "source_dataset_terms_required",
-    redaction_status: str = "raw_prompt_preserved_local_artifact_only",
-    manifest_extra: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Path:
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
-    # Derive from the output workload filename so suffixed runs (e.g. `_1k`)
-    # never overwrite baseline manifests (task 7.5).
-    manifest_stem = output_path.stem.replace("_prompt_workloads", "")
-    manifest_path = MANIFEST_DIR / f"{manifest_stem}_manifest.json"
+    stem = output_path.stem.replace("_prompt_workloads", "")
+    path = MANIFEST_DIR / f"{stem}_manifest.json"
     payload = {
         "adapter": adapter_name,
         "source_dataset": source_dataset,
@@ -267,25 +232,17 @@ def write_manifest(
         "output_workload_path": str(output_path),
         "sample_count": sample_count,
         "field_mapping_version": FIELD_MAPPING_VERSION,
-        "conversion_command": conversion_command,
+        "admission_semantics": "prompt_before_target_model_generation",
+        "conversion_command": [sys.executable, *sys.argv],
         "unavailable_source_fields": sorted(set(unavailable_fields)),
         "claim_scope": claim_scope,
-        "dag_available": dag_available,
-        "license_access_status": license_access_status,
-        "redaction_status": redaction_status,
+        "license_access_status": "source_dataset_terms_required",
+        "redaction_status": "raw_prompt_preserved_local_artifact_only",
     }
-    if manifest_extra:
-        payload.update(manifest_extra)
-    manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return manifest_path
-
-
-def add_common_args(parser: argparse.ArgumentParser, repo_id: str, output_name: str) -> None:
-    parser.add_argument("--dataset-root", default=str(DATASET_ROOT))
-    parser.add_argument("--source", default=None)
-    parser.add_argument("--output", default=str(WORKLOAD_OUTPUT_DIR / output_name))
-    parser.add_argument("--limit", type=int, default=256)
-    parser.add_argument("--repo-id", default=repo_id)
+    if extra:
+        payload.update(extra)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def run_converter(
@@ -298,25 +255,31 @@ def run_converter(
     convert_fn: Any,
     manifest_extra: dict[str, Any] | None = None,
 ) -> None:
-    add_common_args(parser, source_dataset, output_name)
+    parser.add_argument("--dataset-root", default=str(DATASET_ROOT))
+    parser.add_argument("--source")
+    parser.add_argument("--output", default=str(WORKLOAD_OUTPUT_DIR / output_name))
+    parser.add_argument("--limit", type=int, default=1_000)
+    parser.add_argument("--repo-id", default=source_dataset)
     args = parser.parse_args()
-    source_path = Path(args.source) if args.source else dataset_dir(args.repo_id, Path(args.dataset_root))
-    output_path = Path(args.output)
-    records, unavailable_fields, dag_available = convert_fn(source_path, args.limit, args.repo_id)
-    sample_count = write_jsonl(records, output_path)
+    source = (
+        Path(args.source)
+        if args.source
+        else dataset_dir(args.repo_id, Path(args.dataset_root))
+    )
+    records, unavailable = convert_fn(source, args.limit, args.repo_id)
+    output = Path(args.output)
+    write_workload_jsonl(records, output)
     manifest = write_manifest(
         adapter_name=adapter_name,
         source_dataset=args.repo_id,
-        source_path=source_path,
-        output_path=output_path,
-        sample_count=sample_count,
-        conversion_command=[sys.executable, *sys.argv],
-        unavailable_fields=unavailable_fields,
+        source_path=source,
+        output_path=output,
+        sample_count=len(records),
+        unavailable_fields=unavailable,
         claim_scope=claim_scope,
-        dag_available=dag_available,
-        manifest_extra=manifest_extra,
+        extra=manifest_extra,
     )
-    print(f"wrote {sample_count} workload records to {output_path}")
+    print(f"wrote {len(records)} workload records to {output}")
     print(f"wrote manifest to {manifest}")
 
 

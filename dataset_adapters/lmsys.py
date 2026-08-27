@@ -19,7 +19,7 @@ OUTPUT_NAME = "lmsys_prompt_workloads.jsonl"
 
 
 def _conversation_blocks(record: dict[str, Any]) -> list[PromptBlock]:
-    blocks = [PromptBlock("system", "LMSYS chat conversation transcript.")]
+    blocks: list[PromptBlock] = []
     messages = (
         record.get("conversation")
         or record.get("conversations")
@@ -31,7 +31,16 @@ def _conversation_blocks(record: dict[str, Any]) -> list[PromptBlock]:
         blocks.append(PromptBlock("conversation_message", messages))
         return blocks
     if isinstance(messages, list):
-        for turn in messages:
+        last = messages[-1] if messages else None
+        last_role = (
+            str(last.get("role", last.get("from", ""))).lower()
+            if isinstance(last, dict)
+            else ""
+        )
+        target = (
+            len(messages) - 1 if last_role in {"assistant", "gpt"} else len(messages)
+        )
+        for turn in messages[:target]:
             if isinstance(turn, dict):
                 role = str(turn.get("role", turn.get("from", "message"))).lower()
                 text = turn.get("content", turn.get("value", turn.get("text", "")))
@@ -40,8 +49,14 @@ def _conversation_blocks(record: dict[str, Any]) -> list[PromptBlock]:
                 text = str(turn)
             if text is None or not str(text).strip():
                 continue
-            block_type = "user_message" if role in {"user", "human"} else (
-                "assistant_message" if role in {"assistant", "gpt"} else "conversation_message"
+            block_type = (
+                "user_message"
+                if role in {"user", "human"}
+                else (
+                    "assistant_message"
+                    if role in {"assistant", "gpt"}
+                    else "conversation_message"
+                )
             )
             blocks.append(PromptBlock(block_type, str(text)))
     return blocks
@@ -53,15 +68,23 @@ def convert(source_path, limit: int, repo_id: str):
     for source_index, _, raw in iter_raw_records(source_path, limit=None):
         group_text, group_field = first_text(
             raw,
-            ("conversation_id", "conv_id", "id", "conversation_hash", "turn_identifier"),
+            (
+                "conversation_id",
+                "conv_id",
+                "id",
+                "conversation_hash",
+                "turn_identifier",
+            ),
         )
-        timestamp, timestamp_field = first_text(raw, ("tstamp", "timestamp", "created_at"))
+        timestamp, timestamp_field = first_text(
+            raw, ("tstamp", "timestamp", "created_at")
+        )
         if group_field is None:
             unavailable_fields.append("source_group_id")
         if timestamp_field is None:
             unavailable_fields.append("timestamp")
         blocks = _conversation_blocks(raw)
-        if len(blocks) <= 1:
+        if not blocks:
             unavailable_fields.append("conversation")
             continue
         records.append(
@@ -77,16 +100,17 @@ def convert(source_path, limit: int, repo_id: str):
                 role="assistant",
                 phase="chat",
                 graph_node_type="conversation",
-                unavailable_fields=["dependency_edges", "ready_times"],
             )
         )
         if len(records) >= limit:
             break
-    return records, unavailable_fields, False
+    return records, unavailable_fields
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert LMSYS-Chat-1M to TokenMoE prompt workloads.")
+    parser = argparse.ArgumentParser(
+        description="Convert LMSYS-Chat-1M to TokenMoE prompt workloads."
+    )
     run_converter(
         parser=parser,
         adapter_name="lmsys",

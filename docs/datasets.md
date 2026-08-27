@@ -1,62 +1,62 @@
-# TokenMoE External Datasets
+# Datasets and artifacts
 
-## Download
-
-Use the existing local script:
-
-```bash
-python /home/youwei/bzh/dataset/download_dataset.py
-```
-
-Only `DATASET_LIST` is changed by this repository work. It targets:
-
-- `anon8231489123/ShareGPT_Vicuna_unfiltered`
-- `lmsys/lmsys-chat-1m`
-- `nebius/SWE-agent-trajectories`
-- `nvidia/OpenCodeInstruct`
-- `nvidia/OpenMathInstruct-2`
-
-If a dataset is gated, the failure remains visible in the download log and the
-dataset is not replaced.
-
-## Conversion
-
-Converters live in `dataset_adapters/`, outside core `tokenmoe/` runtime code.
-Run all converters:
+TokenMoE keeps source datasets and generated artifacts outside the Git
+repository. Set these roots for the local machine:
 
 ```bash
-PYTHONPATH=. python -m dataset_adapters.convert_all --limit 256
+export TOKENMOE_DATASET_ROOT=/path/to/datasets
+export TOKENMOE_ARTIFACT_ROOT=/path/to/tokenmoe_artifacts
 ```
 
-Per-dataset outputs:
+The local workspace currently stores the public routing-trace corpus at:
 
-- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/sharegpt_prompt_workloads.jsonl`
-- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/lmsys_prompt_workloads.jsonl`
-- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/swe_agent_prompt_workloads.jsonl`
-- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/opencode_prompt_workloads.jsonl`
-- `/home/youwei/bzh/dataset/tokenmoe_artifacts/workloads/openmath_prompt_workloads.jsonl`
+```text
+/home/youwei/bzh/dataset/MoE_expert_selection_trace
+```
 
-Manifests are written under
-`/home/youwei/bzh/dataset/tokenmoe_artifacts/manifests/` and record source
-paths, output paths, sample counts, mapping version, command, unavailable
-fields, license/access status, redaction status, claim scope, and DAG
-availability.
+That corpus is useful for model- and domain-level routing characterization. It
+does not contain TokenMoE agent metadata and must not be treated as evidence for
+the agent-conditioned hypothesis.
 
-## Workload v2
+## Supported sources
 
-Each JSONL row includes:
+| Adapter | Source | Claim scope |
+| --- | --- | --- |
+| `sharegpt` | `anon8231489123/ShareGPT_Vicuna_unfiltered` | chat prompt |
+| `lmsys` | `lmsys/lmsys-chat-1m` | chat prompt |
+| `swe_agent` | `nebius/SWE-agent-trajectories` | agent trajectory |
+| `opencode` | `nvidia/OpenCodeInstruct` | domain instruction |
+| `openmath` | `nvidia/OpenMathInstruct-2` | domain instruction |
 
-- `schema_version = "tokenmoe.workload.v2"`
-- `prompt`
-- `prompt_segments` with `segment_id`, `block_type`, `segment_position`,
-  `char_start`, `char_end`, and alignment status fields
-- `source_dataset`, `source_index`, `source_group_id`, and timestamp when
-  available
-- `claim_scope`: `real_agent_metadata`, `chat_prompt_only`, or
-  `domain_instruction`
-- `dependencies`, `dependency_edges`, `dag_available`, and `meta.ready_time`
-  when reconstructable
+Converters emit prompts representing the state before target-model generation.
+For chat and instruction corpora, target answers are removed. For SWE-agent,
+one workload record is emitted before each action and contains only prior
+actions and observations.
 
-Only SWE-agent trajectory workloads can support real agent-DAG scheduler claims.
-ShareGPT/LMSYS support chat prompt locality, and OpenCode/OpenMath support
-domain-instruction locality.
+## Artifact layout
+
+```text
+$TOKENMOE_ARTIFACT_ROOT/
+  workloads/     normalized admission-request JSONL
+  manifests/     dataset provenance and conversion semantics
+  traces/        strict vLLM routed-expert JSONL
+  analysis/      generated evaluation JSON
+  logs/          collection environment reports
+```
+
+Artifacts may contain raw prompts and must remain local unless the source
+dataset license and redaction policy permit redistribution.
+
+## Workload contract
+
+The only accepted workload version is `tokenmoe.workload.v2`. Every record
+contains:
+
+- one request ID and matching `AgentNodeMeta`;
+- the exact prompt passed to vLLM;
+- typed prompt blocks with character spans;
+- source dataset, source item, source group, and claim scope;
+- dependencies only when they correspond to earlier LLM requests.
+
+Missing values are represented as JSON `null`, not string sentinels or inferred
+defaults.

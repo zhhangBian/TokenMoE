@@ -9,9 +9,9 @@ logs/
 *.pid
 
 # Common local scratch directories.
-/archieve/
-/archive/
-data/
+/data/
+/analysis/
+/reports/
 
 PLAN.md
 PLAN-REVIEW-LOG.md

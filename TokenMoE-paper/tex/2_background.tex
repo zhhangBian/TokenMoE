@@ -1,34 +1,22 @@
 \section{Background and Motivation}
-\label{sec:background}
 
-\subsection{MoE Serving}
-\MoE models replace dense feed-forward layers with a set of experts and a router.
-For each token and layer, the router selects a small number of experts, typically top-1 or top-2.
-The benefit is high parameter count at lower per-token compute; the cost is serving complexity.
-Expert weights may be sharded across devices, moved between CPU and GPU, or dynamically rebalanced.
-Late knowledge of expert choices creates stalls when the needed expert is not resident or when many tokens concentrate on the same expert.
+\subsection{Late expert knowledge}
 
-Serving systems therefore rely on a mixture of expert parallelism, load balancing, prefetching, and placement.
-Reactive policies observe recent routing and move experts accordingly.
-These policies are model-agnostic but have limited visibility into upcoming requests.
-\project asks whether agent workloads provide earlier request-level signals that complement router-time observation.
+At each sparse layer, the router maps a token representation to top-$k$
+experts and combination weights. Expert parallel systems can execute this
+mapping efficiently when weights are resident and load is balanced. Under
+offload or dynamic placement, however, the decision arrives after the system
+could have started moving weights.
 
-\subsection{Agent Workloads}
-Agent runtimes build prompts from structured nodes.
-A coding workflow may contain a planner, coder, tester, and critic.
-A search workflow may contain a planner, searcher, and summarizer.
-Each node has metadata before inference: role, phase, tool type, graph-node type, prompt-block types, ready time, dependency list, and criticality.
-These fields are stable enough for scheduling and audit logs; \project reuses them as predictor keys.
+Reactive histories provide a useful prior but assume future requests resemble
+recent requests. Agent execution can shift systematically between planning,
+editing, testing, and error recovery. This motivates conditioning expert demand
+on request context as well as temporal state.
 
-The key distinction from semantic prediction is timing.
-\project does not inspect generated text to predict future routing.
-It uses pre-decode metadata that the scheduler already knows.
-This makes the signal available early enough for expert prefetch and placement.
+\subsection{Information boundary}
 
-\subsection{Dense-Model Boundary}
-Not every model has routed experts.
-The requested end-to-end target, \Qwen at \texttt{/home/youwei/bzh/model/Qwen/Qwen2.5-7B-Instruct}, is a dense Qwen2 causal language model.
-Its Hugging Face config contains \texttt{model\_type=qwen2}, architecture \texttt{Qwen2ForCausalLM}, and no expert-count fields.
-For such models, \project's correct behavior is not to emulate a router.
-Instead, the vLLM sidecar records metadata and explicitly returns \texttt{dense\_model\_no\_moe\_router}.
-This negative case is part of the system contract and prevents misleading MoE claims.
+The useful information must exist before routing. Valid features include
+orchestrator metadata and the prompt already admitted to the model. Invalid
+features include the current action being generated, target reference answers,
+current hidden states, and the current request's router output. This timing
+boundary distinguishes a deployable prior from retrospective explanation.

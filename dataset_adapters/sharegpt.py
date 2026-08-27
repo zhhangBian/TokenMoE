@@ -18,10 +18,21 @@ OUTPUT_NAME = "sharegpt_prompt_workloads.jsonl"
 
 
 def _conversation_blocks(record: dict[str, Any]) -> list[PromptBlock]:
-    blocks = [PromptBlock("system", "Chat conversation transcript.")]
+    blocks: list[PromptBlock] = []
     conversations = record.get("conversations") or record.get("messages") or []
     if isinstance(conversations, list):
-        for turn in conversations:
+        last = conversations[-1] if conversations else None
+        last_role = (
+            str(last.get("from", last.get("role", ""))).lower()
+            if isinstance(last, dict)
+            else ""
+        )
+        target = (
+            len(conversations) - 1
+            if last_role in {"gpt", "assistant"}
+            else len(conversations)
+        )
+        for turn in conversations[:target]:
             if not isinstance(turn, dict):
                 continue
             role = str(turn.get("from", turn.get("role", "message"))).lower()
@@ -45,7 +56,7 @@ def convert(source_path, limit: int, repo_id: str):
     for source_index, _, raw in iter_raw_records(source_path, limit=None):
         group_id = str(raw.get("id", raw.get("conversation_id", source_index)))
         blocks = _conversation_blocks(raw)
-        if len(blocks) <= 1:
+        if not blocks:
             unavailable_fields.append("conversations")
             continue
         records.append(
@@ -60,16 +71,17 @@ def convert(source_path, limit: int, repo_id: str):
                 role="assistant",
                 phase="chat",
                 graph_node_type="conversation",
-                unavailable_fields=["timestamp", "dependency_edges", "ready_times"],
             )
         )
         if len(records) >= limit:
             break
-    return records, unavailable_fields, False
+    return records, unavailable_fields
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert ShareGPT to TokenMoE prompt workloads.")
+    parser = argparse.ArgumentParser(
+        description="Convert ShareGPT to TokenMoE prompt workloads."
+    )
     run_converter(
         parser=parser,
         adapter_name="sharegpt",

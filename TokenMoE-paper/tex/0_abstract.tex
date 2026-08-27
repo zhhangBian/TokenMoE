@@ -1,11 +1,11 @@
-Mixture-of-Experts LLMs expose a serving bottleneck that dense-model systems largely avoid: every token chooses a small set of experts, yet the serving engine must keep enough expert weights, caches, and placement state ready before the router's decision is known.
-This paper studies whether multi-agent LLM workloads provide earlier signals.
-Agent runtimes already know a request's role, phase, tool type, graph position, and prompt-block composition before decoding starts.
-\project uses this metadata to predict an agent-conditioned \emph{\EWS} and to drive conservative expert prefetching, scheduling, and placement decisions without changing model outputs.
-
-The key mechanism is \RouteSig, an online distribution store keyed by hierarchical agent metadata.
-\RouteSig learns per-layer expert distributions from routed traces, falls back to coarser keys when evidence is sparse, and exposes confidence and miss-cost estimates to the serving policy.
-We implement a trace-first prototype with a vLLM-compatible sidecar and a capability gate that disables routed-expert capture on dense models.
-On real routed traces from \TinyMixtral, \RouteSig reaches a top-4 expert-label hit rate of 86.1\%, improving over a global-frequency baseline at 77.4\%, and replay simulation estimates a 160.4 ms stall-reduction opportunity with 2.1\% wasted prefetch.
-On the requested \Qwen target, a dense Qwen2 model, \project runs end-to-end through real vLLM and correctly takes the no-router fallback path while preserving generated outputs and logging metadata overhead.
-Together, these results show both the opportunity for agent-conditioned MoE serving and the systems boundary needed for safe deployment.
+Mixture-of-Experts (MoE) serving systems learn a token's expert demand only
+when the model router executes, which is late for expert prefetching and
+placement. Agent runtimes expose request context earlier, including node role,
+execution phase, tool history, and prompt structure. We present \project, a
+research design that treats this context as a prior over per-layer expert
+working sets while leaving the model router authoritative. \project contributes
+a strict admission-request schema, an observational vLLM router-trace path, a
+hierarchical route-signature abstraction, and a leakage-resistant online
+evaluation protocol. The current artifact establishes this measurement and
+evaluation foundation; runtime speedups remain contingent on demonstrating
+signal beyond temporal routing history on real agent workloads.
