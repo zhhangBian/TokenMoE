@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.vscode
 
 tmp/
 !tmp/gpu_fill_compute.py
