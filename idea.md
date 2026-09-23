@@ -1,137 +1,120 @@
-# Agent 负载中的 MoE Expert 预测式预取优化
+# TokenMoE：面向 Agent 服务的 MoE Expert 需求预测与 GPU 驻留管理
 
-## 背景介绍
+## 核心主张
 
-### 场景描述
+在 agent 负载里，一次 LLM 请求会用到哪些 expert、什么时候需要，在请求到达模型之前就可以从 agent 运行时掌握的信息中预测出来：角色模板和刚发出的工具调用决定内容，工具的运行进度决定时间。
 
-MoE 模型把 Transformer 中的部分 FFN 层替换为多个专家，每个 token 经过 router 选择少量专家计算。例如 DeepSeek-V4-Flash 是 284B 总参数、每 token 激活 13B（256 routed experts，top-6）；dots3-note Preview 是 280B 总参数、每 token 激活 16B（256 routed experts + 1 shared，top-8）。
+MoE 模型的 expert 是所有请求共享的权重，GPU 里放哪些 expert 是一个整体决定。
 
-MoE 的优势是计算稀疏，但系统问题也来自这里：**需要存储的专家很多，实际激活的专家很少，且激活集合由运行时 router 决定**。
+本工作用这些预测代替"最近谁用过什么"来做这个决定，让 expert 在被 router 选中之前已经在 GPU 里，同时保持 router 权威、模型输出不变。
 
-这带来两个典型场景：
+## 背景
 
-- **端侧或显存不足场景**：GPU 内只能保存一部分 experts。未命中的 expert 需要从 CPU、UFS、NVMe 或远端内存加载。router 在模型内部才给出专家选择，加载信息出现得太晚，导致 expert miss stall。
-- **服务端显存充足场景**：experts 分布在多个 GPU 上（Expert Parallel）。router 会造成 token dispatch、all-to-all 通信、per-expert 负载不均和小 batch GEMM。问题不是能不能放下 experts，而是如何放置、复制和调度 experts。
+### MoE 推理的 expert 供给问题
 
-因此核心问题是：**系统需要在 router 结果真正出现之前，提前准备即将被访问的 expert 状态**——端侧需要提前加载，服务端需要提前复制热点 expert。
+MoE 用多个 expert 替换 FFN，每个 token 只激活其中少数：
 
-### Agent 负载的特殊性
+- DeepSeek-V4-Flash 为 284B 总参数、每 token 激活 13B，256 个 routed expert 选 6；
+- dots3-note Preview 为 280B 总参数、每 token 激活 16B，256 个 routed expert 加 1 个 shared expert，选 8。
 
-普通 LLM Serving 看到的是一串独立请求，系统不知道下一个请求是什么。
+需要存储的 expert 很多，实际激活的很少，激活集合由运行时 router 逐层决定。
 
-Agent Serving 不同。一个 Agent Application 由 Orchestrator 调度多个 LLM 请求，形成一个有向无环图（DAG）。每个节点是一次 LLM 调用，节点之间存在依赖关系和条件分支。一个 Agent 节点还可以 spawn 子 Agent，子 Agent 完成后 join 回父 Agent。系统在请求进入模型之前就已经知道：
+显存放不下全部 expert 时，未命中的 expert 要从 CPU 内存或 NVMe 加载。router 是在模型内部逐层给出选择的，到那时再加载已经太晚，计算只能停下来等，这就是 expert miss stall。
 
-- 这是哪个 Agent Template（planner、coder、searcher、reviewer 等）；
-- 当前在 DAG 中的位置；
-- 哪些节点已完成、正在执行或尚未执行；
-- 图中哪些后续节点可能接下来运行。
+### 本工作面向的 agent 负载
 
-这些信息可以在 router 执行之前就被利用。
+当前的 LLM agent 基本是同一种形态：
 
-### 现有方案的局限
+- 一个大模型加一组工具，在循环里运行。
+- 角色由 system prompt 和工具列表定义；每一轮模型生成一段推理和一个工具调用，运行时执行工具，把结果追加到上下文，再次调用模型，直到模型给出最终答案。
+- Claude Code、Codex CLI、OpenHands、SWE-agent 都是这样的单循环 agent。
 
-已有 MoE 优化工作（MoE-Infinity、ProMoE、ExpertFlow 等）主要利用：
+在此之上有两种组合：主 agent 把子任务交给子 agent（另一个循环，通常角色不同）并等待其返回；多角色流水线（MetaGPT、ChatDev 一类框架）把 planner、coder、reviewer 等循环按固定或条件依赖串起来。
 
-- token 或 sequence 级别的历史 router trace；
-- 当前请求的中间 hidden states（前几层 router 结果预测后续层）；
-- 最近窗口内的 expert 访问统计。
+从模型服务的角度，一个循环就是一串请求。相邻两个请求的 prompt 共享很长的前缀，prefix cache 命中后不重算；新增的部分是上一轮工具的输出，模型输出是下一段推理和工具调用。两个请求之间隔着一次工具执行，短则毫秒，长则几分钟。服务器上同时运行的是多个这样的循环，来自不同用户，或同一应用的不同角色。
 
-这些信息有一个共同问题：**它们都发生在请求内部，或者发生在 expert 已经开始变热之后**。预测信号出现得太晚，对端侧 offload 来说预取 lead time 不足，对服务端来说无法提前做 replica placement。
+本工作假设 agent 运行时把三类信息随请求或通过旁路传给模型服务：
 
-没有工作从 Agent 层面进行设计——利用"同一个 Agent Template 在不同任务中反复使用"这一事实来做 expert 维度的预测。
+- session 和角色模板的标识；发出的工具调用，即工具名和参数；
+- 工具运行时的输出流。
 
-## 核心想法
+前两类已有系统在做（TokenCake 的图注册、Continuum 的 program id），第三类是 Ask the Tool 已经验证过的旁路方式，agent 看到的内容不变。
 
-**同一种 Agent 在不同任务中，可能具有稳定的 expert 使用规律。**
+### 现有方法为什么不够
 
-一个 coder Agent 无论处理什么具体任务，它的 system prompt、tool schema 和输出风格是固定的，因此它在 MoE 模型中激活的 expert 分布可能呈现跨任务的稳定性。如果这个规律成立，系统就可以在 Agent 节点还没有生成任何 prompt 内容之前，提前预测它会使用哪些 expert，并将这些 expert 从 CPU 搬运到 GPU（端侧），或提前在多 GPU 上复制即将变热的 expert（服务端），把 H2D 时间和计算时间遮蔽掉。
+expert 预取工作的信号都来自请求内部：上一层的 router 结果、hidden state、最近窗口的访问频率。这些信号在请求已经在 GPU 上执行之后才出现，能提前的只有几层的计算时间，对跨 PCIe 或 NVMe 搬运 expert 来说太短；它们也看不到还没到达的请求，所以回答不了"下一个请求需要什么"。
 
-具体地，结合以下三类信息进行预测：
+agent 感知的 serving 工作看到了请求之外的信息，但用它管理的是别的对象：Autellix、Teola 决定请求的执行顺序；KVFlow、Pythia、PBKV 用 agent 图决定 KV cache 的去留；TokenCake、Continuum、MORI、CacheWise 在工具等待期间卸载或保留 KV；Ask the Tool 读工具进度来决定 KV 何时回来。KV 是每个请求私有的，这些工作都是对每个 session 单独做决定。没有工作把 agent 的信息用到 expert 上，而 expert 是共享的、需要整体决定的模型状态。
 
-1. **Agent Template 的跨图历史**：同一个 Agent Template 在过去不同 Application 中被调用时积累的 router 轨迹统计；
-2. **当前 Application 的执行图结构**：DAG 中节点的依赖关系、已完成节点的信息、后续 ready 节点的组合；
-3. **任务类型**：当前 Application 属于哪类任务（coding、search、discussion 等）。
+## 核心观察
 
-预测对象是：未来时间窗口内，每一层的每个 expert 会被多少 token 使用、大致什么时候开始使用。
+1. **一个 agent 的请求由少数几类内容构成，每类内容的 expert 使用分布稳定，且类别在请求到达前已知。** 角色模板固定了 system prompt、工具格式和输出风格，所以同一角色写出的代码、shell 命令、工具调用在不同任务里长得很像；工具返回的内容也只有几类：文件内容、搜索结果、测试或命令输出、报错。MoE router 按 token 的内容和上下文选 expert，内容类别相近，expert 分布就相近。当 agent 发出 pytest 时，系统已经知道下一个请求新增的是测试输出，随后模型要对测试结果作出反应；这两段内容的 expert 分布都可以从这个角色过去跑测试的记录里估计出来。
+2. **预测对象是预算内的使用分布，不是 expert 集合。** 几百个 token 就会把一层里大部分 expert 至少碰一次，所以"哪些 expert 会被用到"的答案几乎总是"全部"。有意义的问题是：GPU 只能放下一部分 expert 时，先放哪些能接住最多的查找。这是一个按使用量排序的问题，粗粒度的类别信息足以改变排序。
+3. **需求出现的时间由工具决定，而工具在运行中会暴露自己的进度。** 两个请求之间的间隔就是工具执行时间。它在调用前无法预测，因为取决于机器负载、网络和外部服务；但长工具几乎都在运行中打印计数、百分比或阶段标记，读这些输出可以持续修正剩余时间。知道每个 session 何时回来，就知道未来几秒 GPU 需要哪些 expert 的并集；知道还剩多少时间，就知道来得及搬多少。
+4. **expert 是共享状态，GPU 里放什么应由"接下来谁会生成"决定。** 按最近使用来管理 expert，在 agent 负载里会系统性地判断错误：刚进入长工具调用的 session，它的 expert 看起来最热，但几十秒内不会被用；即将从工具返回的 session，它的 expert 看起来已经冷却，却马上需要。多个 session 共用一份 expert，所以这不是每个 session 各自的决定，而是一个基于未来几秒聚合需求的整体决定。
 
-主要用途对应两个场景：
+## 方法
 
-- **Prefetch（端侧/内存受限场景）**：预测即将使用的 expert，提前从 CPU 搬运到 GPU，减少 expert miss stall；
-- **Proactive Replica Placement（服务端/EP 场景）**：预测即将变热的 expert，提前在多 GPU 上复制，降低 Expert Parallel 中的负载不均和 all-to-all tail latency。
+### 预测下一次请求会用哪些 expert
 
-预测器使用轻量 ML 模型（GNN + MLP），利用 Agent 图结构和历史 embedding 预测同一请求内后续 layer 会使用哪些 expert、使用量以及大致使用时间。
+服务系统在每次请求执行时已经拿到 router 的真实选择。把每个请求新增 token 的逐层 expert 使用计数记录下来，按"角色模板、这一步刚调用的工具、工具返回的结果类别、prefill 还是 decode、层"归类累加，就得到一张表：每个键对应一个 expert 使用直方图。这张表就是预测器，随服务运行在线更新，旧记录按时间衰减。
+
+预测发生在 agent 发出工具调用的那一刻。此时角色和工具已知，结果类别由进度读取给出（见下节）。用它们查表，取出各层的直方图，按使用量排序，前若干个就是应当驻留的 expert。细键样本不足时退回到粗键：先丢结果类别，再丢工具，最后退到该角色的总体分布。全新角色的处理见泛化一节。
+
+这张表和 session 自己的最近历史互补。稳态循环里上一步和这一步的路由很接近，用上一步的直方图就够；但 session 的第一步、子 agent 的第一步、角色切换、工具类型切换时，上一步没有参考价值，这时表提供跨任务的先验。预测器根据当前是否处于这类转移点，在两者之间加权。
+
+### 预测下一次请求什么时候到来
+
+这一步回答两个问题：还有多长时间可以搬运 expert，以及未来几秒里哪些 session 会处于生成状态。等待子 agent 或前驱节点的 agent，时间由依赖关系给出；等待工具的 agent，时间要从正在运行的工具读出来。
+
+读取不依赖逐工具的解析器，也不改变工具的运行方式，而是旁路读取工具的标准输出、标准错误和它写入的文件。按精确程度分三层，能用精确的就用精确的：工具或框架自己报告的进度，例如 MCP 的进度通知；通用的输出流特征，包括每秒输出行数、静默时长、行内计数器的变化率、百分比和进度条、重复行模板的周期、阶段切换标记，用轻量模型映射到剩余时间；一个小型稠密语言模型运行在 CPU 或低优先级 GPU stream 上，低频读取命令行和最近几十行输出，判断工具处于什么阶段、大致还剩多少、结果是通过还是失败。输出是剩余时间的分布和结果类别。读不出进度的工具，例如远程 API 或等待人工输入，得到宽分布，系统据此保守行事。
+
+进度读取和 MoE 的稀疏性直接相关。稠密模型里一个 session 何时回来只影响它自己的 KV；MoE 里一个正在等工具的 session 不需要任何 expert，它回来的时刻决定 GPU 里接下来要出现哪一组 expert，它剩余的时间决定这组 expert 来不来得及搬。结果类别还决定用哪张直方图：测试失败后 agent 进入读 traceback、改代码的循环，测试通过后进入总结或下一个子任务，两者的 decode 分布不同。
+
+### 根据预测管理 GPU 里的 expert
+
+有了每个 session"会用什么、何时回来"，就可以对每一层算出未来一小段时间内每个 expert 的期望需求：把各 session 的直方图按"该 session 在这段时间处于生成状态的概率"加权求和，正在 decode 的 session 权重为一，等待工具的 session 权重来自剩余时间分布。GPU 驻留集跟随这个期望需求：需求高的 expert 提前搬入；所有消费者都还在长工具里的 expert 让位；搬运安排在预计返回之前完成，而不是一进入工具就开始，以免挤掉正在 decode 的 session 正在用的 expert。这是一个带预测的缓存问题：预测准时接近全知策略，预测失效时退化为按需加载加最近使用替换，不会比现状更差。
+
+单用户单卡是 N=1 的特例：需求只来自一个 session，决定退化为"在工具执行期间把下一步要用的 expert 换进来"，可用的搬运时间就是工具剩余时间。多 session 服务器上没有 GPU 空闲的窗口，但每一次工具返回都改变需求的构成，预测让驻留集跟随将要发生的需求而不是刚发生过的使用，在同样命中率下可以驻留更少的 expert。并发继续增大到一步 decode 就要触及大部分 expert 时，offload 本身不再成立，expert 应全部驻留并分片，此时同一份需求预测可用于 Expert Parallel 的副本放置，这是次要应用。
+
+工具等待期间 KV 的回传与 expert 的搬入共用一条主机到 GPU 的链路，两者按各自的需求时刻联合排序。KV 的卸载与保留策略本身不在本工作范围内。
+
+真实 router 始终执行，预测只决定搬运和驻留。预测错误只影响性能，模型输出逐 token 不变。
+
+## 泛化：预测器依赖历史，哪些历史可以迁移
+
+预测器完全建立在"同一角色过去的路由记录"上，所以它的价值取决于历史能迁移多远。我们把这个问题拆成三层，每一层对应一种实际的部署情形。
+
+**G1，同样的 agent 和工作流，新的任务。** 训练记录和测试记录来自同一批角色模板和同一种工作流，但测试任务的输入内容从未见过。它检验的是：角色和步骤类型带来的 expert 分布是否真的跨任务稳定，还是只是在记忆相似的 prompt。如果 G1 不成立，后面的一切都没有意义。对应的情形是一个 agent 产品在日常运行中服务新的用户请求。
+
+**G2，同样的角色模板，新的组合方式。** 测试时的应用把已见过的角色按没见过的方式组织：不同的顺序、新的子 agent 派生模式、新的条件分支。它检验的是：按角色学到的分布能否在新的上下文里直接复用，还是分布依赖于"这个角色前面是谁"。为避免把角色变化误认为图变化，要用相同的角色集合、只改变依赖关系的配对工作流来比较。对应的情形是开发者用现有 agent 搭建新应用。
+
+**G3，从未见过的角色模板。** 某个角色的全部历史被移除，测试时只能看到它的静态描述，即 system prompt 和工具列表，以及当前图和任务输入。冷启动的做法是用描述找最近的已知角色，借用它的表作为起点，然后随着这个角色自己的记录到来逐步替换。要区分两种情况：新模板属于已见过的角色类型，例如另一套 coder prompt；以及完全新的角色类型。关心的量是从第零次运行开始，预测质量随运行次数上升的曲线，也就是一个新 agent 接入后多久开始受益。对应的情形是新 agent 上线。
 
 ## 创新点
 
-### 创新点 1：从 Agent 层面做 expert 预测
-
-原有工作都是在请求粒度和 token 粒度进行预测和缓存优化。本工作首次利用"同一个 Agent Template 在不同 Application 之间是共享的"这一事实，把 expert 预测从"请求内部/router 之后"提前到"request admission 阶段"。这提供了更长的 prefetch lead time。
-
-### 创新点 2：同时利用 Agent 历史和图结构
-
-不仅利用 Agent 自身的历史 router 统计，还利用当前 Application DAG 的结构信息。同一个 coder Agent 放在 planner 后面和放在 reviewer 后面可能有不同的 expert 需求——图结构编码了这种上下文差异。
-
-### 创新点 3：面向 expert cache 的预测式预取与冗余放置
-
-区别于调度层面的优化（Teola、Autellix 等只优化"先执行谁"），本工作优化的是"GPU 里提前放好什么"。在 MoE 服务中，瓶颈已经从"调度谁"变成"GPU 里放不下所有 expert"（端侧）和"哪些 expert 即将过热需要提前复制"（服务端），因此预测未来 demand、提前做 CPU→GPU 搬运或跨 GPU 复制，比单纯优化 batch 更有收益空间。
+1. **把 expert 需求预测从请求内部提前到工具调用发出时。** 用角色模板、当前工具、结果类别和图位置作为条件，从同一角色的历史路由记录中估计下一次请求的 expert 使用分布。这些条件在 prompt 存在之前就可用，lead time 从几层计算时间变为整个工具执行时间。
+2. **面向所有工具的进度读取，并把时间不确定性纳入 expert 管理。** 不依赖逐工具解析器，从工具输出流中估计剩余时间分布和结果类别；剩余时间决定可搬运的预算和各 session 的到达权重，结果类别决定用哪一个分布。
+3. **基于聚合需求预测的 expert 驻留。** 把 expert 作为共享状态处理：驻留集跟随未来几秒的期望需求而不是最近使用，等待中 session 的 expert 受预测保护，单用户预取是 N=1 特例。
+4. **agent 级的泛化框架。** 用新任务、新组合、新角色三层问题界定历史路由记录的迁移范围，并对应到日常服务、新应用搭建、新 agent 上线三种部署情形。
 
 ## 与已有工作的区别
 
-| 工作             | 优化对象                 | 使用信号                       | 与本工作的区别                                     |
-| ---------------- | ------------------------ | ------------------------------ | -------------------------------------------------- |
-| MoE-Infinity     | Expert offloading        | request-level activation trace | 本工作使用 Agent Template 历史作为更早信号         |
-| ProMoE           | Expert proactive caching | 中间 hidden states             | 本工作在 request admission 阶段预测，不等中间结果  |
-| ExpertFlow       | Predictive expert cache  | routing path predictor         | 本工作把 Agent 图结构用于 expert demand 预测       |
-| Teola / Autellix | Agent 请求调度           | Agent 图和概率                 | 它们优化调度顺序，本工作优化 expert 驻留和复制策略 |
-| vLLM EPLB        | Expert replica balance   | 最近负载统计（reactive）       | 本工作用未来 Agent mix 做 proactive placement      |
+| 工作                                                         | 优化对象               | 信号                                            | 与本工作的区别                                               |
+| ------------------------------------------------------------ | ---------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
+| MoE-Infinity、ExpertFlow、FineMoE、SpecPrefetch、SeqMoE      | expert offload 与预取  | 请求内的 router 结果、hidden state、prompt 语义 | 信号在请求执行之后才出现，只能提前几层；本工作在工具调用发出时预测，提前整个工具执行时间。SpecPrefetch 的"预测只指导搬运、router 保持权威"与本工作相同 |
+| Task-Conditioned Routing Signatures、Probing Semantic Routing | 路由结构分析           | 任务类别、prompt 语义                           | 证明任务类别下路由有结构，但不做预测、时间和驻留决策         |
+| Autellix、Teola                                              | agent 请求调度         | agent 图与优先级                                | 决定先执行谁，不决定 GPU 里放什么                            |
+| KVFlow、Pythia、PBKV                                         | agent 图驱动的 KV 管理 | agent step graph、workflow 历史                 | 预测对象是私有 KV；本工作预测共享 expert，可直接使用它们对下一节点的预测 |
+| TokenCake、Continuum、MORI、CacheWise                        | 工具等待期间的 KV 管理 | 声明时长、TTL、空闲程度、工具元信息             | 对每个 session 单独决定 KV 去留；本工作对共享 expert 做整体决定，不做 KV 卸载、显存分区和请求调度 |
+| Ask the Tool                                                 | 工具进度驱动的 KV 决策 | 逐工具解析器和 instrument 读出的进度            | 同类时间信号用于 expert；用学习的读取器替代逐工具解析，并额外给出结果类别 |
+| vLLM EPLB 等 EP 负载均衡                                     | 服务端 expert 副本放置 | 最近负载统计                                    | reactive；本工作的需求预测可用于 proactive 副本放置，作为高并发下的次要应用 |
 
-## 方法概述
+## 研究问题
 
-### Agent Template Embedding
-
-每个稳定的 Agent Template 维护一个 embedding，由固定描述信息（system prompt、tool schema）的编码加上历史 router 轨迹的修正组成。新 Agent 没有历史时依赖描述编码；随着运行次数增加逐渐使用自己的历史。同一 Agent 在不同任务类型下保存独立的 expert 使用统计。
-
-### 图感知预测
-
-将 Application DAG 和 Agent 节点特征输入轻量 GNN，传播前驱/后继信息后，对每个未来节点预测：
-
-- 是否会执行（分支概率）；
-- 大致执行时间区间；
-- 每层会使用哪些 expert 以及 token 数量。
-
-### 端侧：Prefetch 决策
-
-根据预测的 expert demand 和当前 GPU cache 状态，计算每个 expert 的未来收益（执行概率 × 使用量 × miss cost），提前将高收益 expert 从 CPU/NVMe 搬运到 GPU。真实 router 仍然执行，预测错误只影响性能不影响正确性——未命中时退化为按需加载。
-
-### 服务端：Proactive Replica Placement
-
-根据预测的未来 Agent mix 和 expert demand，识别即将变热的 expert，在 router 结果出现之前就提前在多 GPU 上复制这些 expert。当真实 router 结果到来时，token 被分派到负载较轻的 replica，降低 all-to-all tail latency 和 per-GPU 负载不均。区别于现有 EPLB 的 reactive 策略（先观察到热再复制），本方法是 proactive 的（根据未来 Agent 图预测热点）。
-
-## 泛化验证设计
-
-| 任务                  | 测试时的新东西                         | 核心问题                      |
-| --------------------- | -------------------------------------- | ----------------------------- |
-| G1：新任务实例        | 具体输入内容没见过                     | Agent 历史能否跨任务复用      |
-| G2：新 Application 图 | 图结构没见过，但 Agent Template 都见过 | 已学的 Agent 能否组合到新图中 |
-| G3：新 Agent Template | 某个 Agent 的全部历史都没有            | 冷启动能否在线适应            |
-
-## 实验模型与数据
-
-使用两个 MoE 模型运行 Agent 任务并进行优化验证：
-
-- **DeepSeek-V4-Flash**：284B / 13B active，256 experts，top-6，1M context；
-- **dots3-note Preview**：280B / 16B active，256 experts + 1 shared，top-8，512K context。
-
-Agent 负载来源于 AgentX 开源的真实 agentic coding traces（`semianalysisai/cc-traces-weka-062126`），包含 393 个 Claude Code sessions。该数据集提供：
-
-- 完整的 Agent DAG 结构：主 agent 的线性请求链、sub-agent 的 spawn/join 拓扑、并行分支和依赖关系；
-- 每个请求的元信息：agent_id（区分主 agent 和各 sub-agent）、请求时间戳、input/output token 数、inter-turn delay；
-- KV-cache block hash（用于还原 prefix 复用结构）。
-
-将这些 traces replay 到上述两个 MoE 模型上，采集每层的 router logits 和 expert 选择结果，构建带有 Agent 元数据标注的 router trace 数据集。在此基础上验证 Agent-conditioned expert 预测和预取/冗余放置的效果。
-
-## 预期收益
-
-- **端侧**：expert miss stall 下降，预测准确时 expert 已在 GPU 中等待，H2D 搬运时间被计算时间遮蔽；
-- **服务端**：hot expert replica 提前到位，all-to-all tail latency 下降，per-GPU 负载更均衡；
-- **正确性保证**：真实 router 没有被替代，模型行为不变，输出完全一致。
+1. **agent 信息在 temporal 历史之外还提供多少信号。** 在已知 session 上一步路由的条件下，加入角色、工具、结果类别后，预算内的命中率能提高多少，距离全知上界还有多远。增益是否集中在转移点，即首步、子 agent 首步、工具切换，以及 decode 阶段；稳态循环里是否接近零。不同模型之间差别多大：路由越集中的模型收益越大，带 shared expert、路由较平的模型收益是否仍然可观。
+2. **工具结果是否改变随后的生成路由。** 同一角色在测试通过与失败之后的 decode 分布差别有多大，这个差别是否大到值得在预测里区分结果类别，是否在不同角色和模型上都成立。
+3. **不依赖逐工具解析器的进度读取能做到多准。** 在驻留决策真正需要的时刻，即工具即将返回前的几秒，通用读取器的剩余时间误差与显式进度、按工具名的历史均值、固定 TTL 相比如何；在没见过的工具和变化的机器负载下是否稳定；能覆盖多大比例的工具时间；小模型读日志的开销是否可以忽略。
+4. **历史能迁移多远。** G1 中跨任务的命中率损失多大；G2 中角色分布是否依赖前驱角色，换图之后先验还剩多少；G3 中从描述找到的最近角色作为起点比全局分布好多少，多少次运行后接近有历史的水平。
+5. **预测驱动的驻留比现有策略好多少，好在哪个区间。** 与按需加载、LRU 和 LFU、请求内 layer-ahead 预取、语义匹配预取以及全知策略相比，expert miss 造成的停顿、工具返回后的首 token 延迟、decode 每 token 延迟如何变化；收益如何随并发 session 数、expert 预算和链路带宽变化，在多大的并发下消失；预测错误时是否确实不劣于按需加载。
+6. **与 KV 侧机制是否正交。** 与 TokenCake 一类工具等待期间的 KV 卸载同时开启时，两者的收益是否叠加；共用链路时按需求时刻联合排序比各自独立搬运好多少。
