@@ -1,9 +1,0 @@
-\section{Related Work}
-
-vLLM~\cite{vllm} established high-throughput LLM serving with paged attention,
-while structured runtimes such as SGLang~\cite{sglang} expose program-level
-execution information. MoE systems optimize expert parallelism, placement,
-replication, and offload using observed token load. \project studies a
-complementary timing point: a request-level prior available before the native
-router executes. It does not replace routing, semantic caching, or reactive
-load balancing.
