@@ -30,6 +30,15 @@ podman --version                 # 使用 Docker 时换成 docker --version
 
 ## 2. 设置路径并 clone
 
+主仓库与 vLLM 是两个独立仓库，必须一起获取：
+
+| 仓库 | 地址 | 使用的分支 / 版本 |
+|---|---|---|
+| 主仓库 | `https://github.com/zhhangBian/TokenMoE.git` | `main` 上维护者提供的固定 `RELEASE_REF` |
+| `vllm/` 子模块 | `https://github.com/zhhangBian/TokenMoE-vLLM.git` | `tokenmoe-v0.30.0-trace`，实际 checkout 主仓库固定的 commit |
+
+当前采集 fork 的 commit 为 `7665341a1eeb561a964531867341f01b22d1b09f`，基于 upstream `v0.30.0`。**不要把 `vllm/` 切到 `main` 或 upstream `v0.30.0` tag，它们不是这次加入 recorder 的采集版本。** 后续发布以主仓库记录的子模块 commit 为准。
+
 以下均在 **Bash** 中执行。示例路径需要换成机器上有写权限的目录；每批实验使用新的 `WORK_ROOT`。
 
 ```bash
@@ -40,24 +49,44 @@ export WORK_ROOT=/data/tokenmoe/collection-20260930-01
 export HARNESS_VENV=/data/venvs/tokenmoe-harness
 export FORK_VENV=/data/venvs/tokenmoe-vllm030
 export RELEASE_REF='<维护者提供的主仓库 commit 或 tag>'
+export VLLM_BRANCH=tokenmoe-v0.30.0-trace
 set -euo pipefail
 
-git clone https://github.com/zhhangBian/TokenMoE.git "$TOKENMOE_REPO"
+# 递归 clone 主仓库及 vLLM 子模块。
+# 本次命令将 GitHub SSH 子模块地址改走 HTTPS，不修改全局 Git 配置。
+git -c url."https://github.com/".insteadOf=git@github.com: \
+  clone --recurse-submodules https://github.com/zhhangBian/TokenMoE.git "$TOKENMOE_REPO"
 cd "$TOKENMOE_REPO"
 git checkout "$RELEASE_REF"
-git submodule init
-# .gitmodules 原地址使用 SSH；这里仅对本机改用 HTTPS。
-git config submodule.vllm.url https://github.com/zhhangBian/TokenMoE-vLLM.git
-git submodule update --init --recursive
+# 切换主仓库版本后，再递归同步到该版本固定的子模块 commit。
+git submodule sync --recursive
+git -c url."https://github.com/".insteadOf=git@github.com: \
+  submodule update --init --recursive
 
 # 确认取得的是带采集功能的版本。
 test -f collection/scripts/run_collection.py
 test -f vllm/vllm/tokenmoe_trace.py
+VLLM_COMMIT="$(git rev-parse HEAD:vllm)"
+test "$(git -C vllm rev-parse HEAD)" = "$VLLM_COMMIT"
 git rev-parse HEAD
 git -C vllm rev-parse HEAD
+git submodule status --recursive
 ```
 
-私有仓库须先取得 GitHub 访问权限。保留上述两个 commit 作为交付信息。**不要执行 `git submodule update --remote`**，它会偏离主仓库固定的 fork 版本；若文件检查失败，先向维护者确认发布版本。
+子模块默认处于 **detached HEAD，这是正常状态，可以直接运行实验**。`tokenmoe-v0.30.0-trace` 是 fork 的开发和发布分支，实验复现使用主仓库固定的 commit，而非自动追随分支最新版本。
+
+如果需要在刚 clone 的子仓库中建立同名本地分支，可额外执行：
+
+```bash
+git -C vllm switch -c "$VLLM_BRANCH" "$VLLM_COMMIT"
+test "$(git -C vllm rev-parse HEAD)" = "$VLLM_COMMIT"
+```
+
+此命令从已固定的 commit 建分支，不拉取或切换到远端最新提交；本地分支已存在时无需重复创建。
+
+如果此前 clone 时漏了 `--recurse-submodules`，进入主仓库、checkout `RELEASE_REF` 后，执行上面的 `submodule sync` 和 `submodule update --init --recursive` 即可补齐。
+
+私有仓库须先取得 GitHub 访问权限。保留上述两个 commit 作为交付信息。**不要执行 `git submodule update --remote` 或在子模块中直接 `git pull`**，以免偏离固定版本；若文件或 commit 检查失败，先向维护者确认发布版本。维护者发布时先运行 `git -C vllm push origin tokenmoe-v0.30.0-trace`，再推送主仓库版本，否则接收者可能无法下载子模块 commit。
 
 ## 3. 安装两个独立环境
 

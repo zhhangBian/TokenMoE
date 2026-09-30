@@ -102,7 +102,7 @@ None. `openspec/specs/` is empty.
 | §8.1 | Instrumentation points: `vllm_xargs`, recorder raw files, reasoning pass-back. |
 | §9 | Model table: Qwen3 is local-debug only; per-model capture path; GPT-OSS score note removed. |
 
-**vLLM fork (`vllm/` submodule).** New branch `tokenmoe/v0.30.0-trace` from tag v0.30.0; the submodule pointer in this repo moves to it.
+**vLLM fork (`vllm/` submodule).** New branch `tokenmoe-v0.30.0-trace` from tag v0.30.0; the submodule pointer in this repo moves to it.
 - New module: `vllm/tokenmoe_trace.py`.
 - Edited files:
   - `vllm/v1/engine/core.py`

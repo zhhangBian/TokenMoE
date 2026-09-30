@@ -12,7 +12,7 @@
   - `cd /home/youwei/bzh/project/TokenMoE/vllm && git ls-files -z -o -i --exclude-standard -- vllm/ | grep -zv __pycache__ | xargs -0 cp --parents -t /home/youwei/bzh/project/TokenMoE-vllm-0722/`
   - From then on, run the old venv with `PYTHONPATH=/home/youwei/bzh/project/TokenMoE-vllm-0722`
   - Verified 2026-09-30: all 987 ignored files match SHA-256 (562,296,456 bytes). The old venv imports both `vllm` and `vllm._C` from the preserved worktree with torch 2.11.0+cu130.
-- [x] 2.2 In the submodule, create and check out branch `tokenmoe/v0.30.0-trace` from tag v0.30.0 (ced6857afa0e). Leave `tokenmoe/router-score-capture` untouched
+- [x] 2.2 In the submodule, create and check out branch `tokenmoe-v0.30.0-trace` from tag v0.30.0 (ced6857afa0e). Leave `tokenmoe/router-score-capture` untouched
 - [x] 2.3 Add `vllm/tokenmoe_trace.py`:
   - enablement from the environment, and startup validation (D9)
   - `engine_meta.json`
@@ -37,7 +37,7 @@
   - npz shape and dtype
   - startup validation
   - API suppression
-- [ ] 2.10 [user] Push branch `tokenmoe/v0.30.0-trace` to origin. Then update the submodule pointer in the parent repo
+- [ ] 2.10 [user] Push branch `tokenmoe-v0.30.0-trace` to origin. Then update the submodule pointer in the parent repo
 
 ## 3. Harness package core (`collection/tokenmoe_collect`)
 
@@ -131,7 +131,7 @@
 
 ### Local commits and handoff scripts (2026-09-30)
 
-- vLLM fork commit: `7665341a1eeb561a964531867341f01b22d1b09f` on `tokenmoe/v0.30.0-trace`; the parent submodule pointer records this commit.
+- vLLM fork commit: `7665341a1eeb561a964531867341f01b22d1b09f` on `tokenmoe-v0.30.0-trace`; the parent submodule pointer records this commit.
 - Added parameterized download, config generation, managed stage execution, and acceptance-summary Python scripts; the handoff guide starts from cloning a published revision.
 - Validation: 30 harness tests and 14 fork tests passed; Ruff, local fork policy checks, OpenSpec strict validation and diff checks passed.
 - Git hooks were skipped for the commits at the user's explicit instruction. Remote push remains pending (task 2.10).

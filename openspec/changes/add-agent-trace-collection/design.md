@@ -535,7 +535,7 @@ Each model needs N=1 plus at least one multi-session config (§8.2), which rough
    - Checking out v0.30.0 in `vllm/`, or installing the new venv from it, would break the old venv.
    - Before either, add a detached worktree of 90025dce2 outside the repo and copy those ignored files into it (commands in task 2.1). From then on, run the old venv with `PYTHONPATH` pointing at that worktree.
 2. **Fork branch.**
-   - Create branch `tokenmoe/v0.30.0-trace` in the submodule from tag v0.30.0 (already present locally).
+   - Create branch `tokenmoe-v0.30.0-trace` in the submodule from tag v0.30.0 (already present locally).
    - Implement the fork edits and `tests/tokenmoe/`, then commit.
    - [user] Push the branch to origin.
    - Point the parent repo's submodule at the new commit.

@@ -443,7 +443,7 @@ benchmark item x role template 集合 x model profile x seed x 并发配置
 | DeepSeek-V4-Flash | 43 层，256 选 6 加 1 shared | Hopper 主实验；默认非 MegaMoE 预期 router 路径，MegaMoE 为 capture_source；smoke 确认 backend 和 prefix cache |
 | dots3-note Preview | 256 选 8 加 1 shared，含 MTP | v0.30.0 已注册；Hopper 主实验，预期 router 路径，L 从绑定层获得；关闭 MTP，仅文本 |
 
-fork 基于 upstream v0.30.0（ced6857afa0e），分支 tokenmoe/v0.30.0-trace。Hopper parser 与 TP 按该版本 recipe 配置、smoke 确认。每模型先核对 layer_map、一次 routed request 与引擎步，再通过规则 12 等价性测试；本次不测逐层延迟。
+fork 基于 upstream v0.30.0（ced6857afa0e），分支 tokenmoe-v0.30.0-trace。Hopper parser 与 TP 按该版本 recipe 配置、smoke 确认。每模型先核对 layer_map、一次 routed request 与引擎步，再通过规则 12 等价性测试；本次不测逐层延迟。
 
 ## 10. G1、G2、G3 切分规则
 
