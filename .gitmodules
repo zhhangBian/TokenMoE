@@ -1,4 +1,4 @@
 [submodule "vllm"]
 	path = vllm
-	url = git@github.com:zhhangBian/TokenMoE-vLLM.git
+	url = https://github.com/zhhangBian/TokenMoE-vLLM.git
 	branch = tokenmoe-v0.30.0-trace

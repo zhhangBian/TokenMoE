@@ -1,6 +1,6 @@
 # Agent 负载下 MoE Router 数据采集规范
 
-本规范定义 TokenMoE 自采数据的内容、产生方、格式与校验规则。目标是一次采集同时支撑 仓库根目录 `#idea.md` 中的四类用途：
+本规范定义 TokenMoE 自采数据的内容、产生方、格式与校验规则。目标是一次采集同时支撑仓库根目录 `#idea.md` 中的四类用途：
 
 | 用途               | 要回答的问题                                                 | 依赖的记录                                                |
 | ------------------ | ------------------------------------------------------------ | --------------------------------------------------------- |
@@ -10,6 +10,8 @@
 | 泛化切分 G1/G2/G3  | 哪些历史记录可以迁移到新任务、新组合、新角色                 | 角色模板版本、角色类型、应用定义、任务标识、种子          |
 
 数据由三个产生方写出，通过共同 ID 离线对齐：agent harness（session、请求、prompt 组成）、工具执行器（工具调用与输出流）、模型服务即 TokenMoE vLLM fork（引擎步、路由）。
+
+脚本入口见 [README.md](README.md)，运行步骤见 [HANDOFF.md](HANDOFF.md)。
 
 ## 1. 设计决策
 
@@ -211,7 +213,7 @@ alignment_error                成功时为 null，定位失败时必填
 
 `harness_scaffold` 指 harness 在工具结果外包裹的固定文字；`agent_prior_output` 指本 session 之前轮次的模型输出。new prefill 区间内的片段是内容预测的直接对象。
 
-离线解码引擎 prompt token IDs（保留特殊 token），按消息顺序精确定位，再尝试去空白定位；按 harness provenance 中的多个字符区间拆出工具 payload。同一调用的长输出头尾分别记为 tool_output，中间固定模板记为 harness_scaffold；输出文本不作修改。角色头、特殊 token、工具调用语法等未归属文字记为 other。字符区间索引到 prompt_ref 文件；增量解码得到 token 偏移，跨边界 token 归其首字符所在片段。无法定位的消息保留空区间和 alignment_error，未认领文字仍由 other 覆盖。pilot 消息定位率低于 99% 时按 Q1 回退到客户端渲染并通过 /v1/completions 发送 token IDs。
+离线解码引擎 prompt token IDs（保留特殊 token），按消息顺序精确定位，再尝试去空白定位；按 harness provenance 中的多个字符区间拆出工具 payload。同一调用的长输出头尾分别记为 tool_output，中间固定模板记为 harness_scaffold；输出文本不作修改。角色头、特殊 token、工具调用语法等未归属文字记为 other。字符区间索引到 prompt_ref 文件；增量解码得到 token 偏移，跨边界 token 归其首字符所在片段。无法定位的消息保留空区间和 alignment_error，未认领文字仍由 other 覆盖。pilot 消息定位率低于 99% 时，回退到客户端渲染并通过 /v1/completions 发送 token IDs。
 
 ### 4.5 Tool Call
 
@@ -352,7 +354,7 @@ runtime/
   llm_requests.jsonl
   prompts/<llm_request_id>.{prompt,output}.txt
   prompt_segments.parquet
-  tool_calls.jsonl
+  tool_calls.jsonl                + tool_args/<tool_call_id>.txt
   tool_output_chunks.parquet      + tool_outputs/<tool_call_id>.out
   engine_steps.parquet
   routing/<model_profile_id>/<llm_request_id>.npz
@@ -364,18 +366,18 @@ derived/
   labels_v<N>/
 ```
 
-finalize 保留 raw；路由和工具输出硬链接到 runtime，跨文件系统时才复制。prompt/output 文本由引擎 token IDs 解码后保存（含特殊 token）；assistant 的解析结果留在请求记录。第一阶段不产生 graph/cache/clock_sync 事件及逐层延迟 profile。
+finalize 保留 raw；路由、工具输出和原始工具参数文件硬链接到 runtime，跨文件系统时才复制。prompt/output 文本由引擎 token IDs 解码后保存（含特殊 token）；assistant 的解析结果留在请求记录。第一阶段不产生 graph/cache/clock_sync 事件及逐层延迟 profile。
 
 估算假设每 session 60 步，每步实际计算约 1.3K token（总计 78K），上下文从 3K 增至 63K、累计约 2.0M token，N=1，未压缩并保留 raw。expert ID 每计算 token 占 L·K 字节（E > 256 时翻倍）。step_index 和 token_positions 各约 0.31 MB/session；其余项约 24 MB/session：token IDs 8 MB，prompt/output 文本 7 MB，引擎步 raw jsonl 6 MB 加 parquet 1 MB，工具输出 1 MB，harness 增量记录不足 1 MB。token IDs 和 prompt 文本随 session 长度呈平方增长。
 
 | 模型 | L × K | expert IDs/session | 总计/session | 500 sessions |
 |---|---|---|---|---|
-| Qwen3-30B-A3B（调试） | 48 × 8 | 30 MB | 54 MB | 27 GB |
-| GPT-OSS-120B | 36 × 4 | 11 MB | 35 MB | 18 GB |
-| DeepSeek-V4-Flash | 43 × 6 | 20 MB | 44 MB | 22 GB |
-| dots3-note | L × 8（L 从 config 读取） | 0.62·L MB | 0.62·L + 24 MB | 0.31·L + 12 GB |
+| Qwen3-30B-A3B（调试） | 48 × 8 | 29.95 MB | 54.58 MB | 27.29 GB |
+| GPT-OSS-120B | 36 × 4 | 11.23 MB | 35.86 MB | 17.93 GB |
+| DeepSeek-V4-Flash | 43 × 6 | 20.12 MB | 44.75 MB | 22.37 GB |
+| dots3-note | L × 8（L 以 layer_map 为准） | 0.624·L MB | 0.624·L + 24.624 MB | 0.312·L + 12.312 GB |
 
-每模型 N=1 加至少一个并发配置，总量约翻倍；pilot 按实际 token 数、文件占用（硬链接去重）和 session 数更新估算。
+以上采用十进制单位，并计入 step_index 与 token_positions 的存储。dots3 暂按 45 层估算时，总计约 52.70 MB/session、26.35 GB/500 sessions。每模型 N=1 加至少一个并发配置，总量约翻倍；pilot 按实际 token 数、文件占用（硬链接去重）和 session 数更新估算。
 
 ## 7. 校验规则
 
@@ -398,6 +400,23 @@ finalize 保留 raw；路由和工具输出硬链接到 runtime，跨文件系�
 
 第一阶段实现规则 1–9、11、12；10、13、14 报告 not_applicable。validation.json 对每条规则给出状态、违规计数和最多 20 个例子 ID；任一适用规则失败时返回非零退出码。
 
+### 7.1 实验验收
+
+正式采集前，pilot 的每个并发档须满足：
+
+| 项目 | 要求 | 依据 |
+|---|---|---|
+| 数据校验 | 所有适用规则通过 | validation.json |
+| 消息字段定位 | 定位率 ≥99% | alignment.json |
+| 正常终止 | 正常提交的 session 占比 ≥90% | run_summary.json |
+| 工具输出 | 原始字节与 agent observation 的对应关系准确，截断和模板包装可追溯 | 原始输出、chunk 与 provenance |
+| recorder 开销 | 相同模型、硬件、服务参数和工作负载下，开启采集的运行开销 <5% | capture 关闭/开启的对照测量 |
+| 存储 | 实测占用与 §6 按实际 token 数计算的估算相符 | 按 inode 去重的文件占用 |
+
+当前正常提交状态由 mini-swe-agent 的 Submitted 判定，不代表 SWE-bench 测试通过；benchmark_score 保持 null。结果汇总覆盖前三项，工具输出核对、开销测量和存储检查另行执行。
+
+若消息定位率低于 99%，按 §4.4 的回退方案处理后重新验收。服务参数、并行配置或权重改变后，等价性记录必须重新生成。
+
 ## 8. Benchmark 与 harness
 
 所有主实验都必须通过目标 MoE 模型重新执行并采集，其他模型产生的 expert ID 不可迁移。
@@ -416,11 +435,11 @@ finalize 保留 raw；路由和工具输出硬链接到 runtime，跨文件系�
 
 - **请求元信息**：POST /v1/chat/completions 的 body 通过 `vllm_xargs.tokenmoe_llm_request_id` 传入本次请求 ID。session/template/step/工具 provenance 留在 harness 侧，按 ID 离线 join。重试沿用 step_index、递增 attempt_id、分配新请求 ID；seed 由 `(base_seed, benchmark_item_id, step_index, attempt_id)` 稳定 hash 派生。
 - **消息与 reasoning**：保存 messages_delta 和逐消息 provenance（segment_type、source_tool_call_id、payload 字符偏移），tools 和采样默认值存 role template。消息列表不是前一请求的追加扩展时保存全量；assistant 的 content、reasoning、tool_calls 完整保存，后续请求回传 reasoning 字段。
-- **工具执行器**：包裹 docker/podman exec，合并管道 tee 原始输出，每次 os.read 记录一个 chunk，返回值、超时异常和 observation 模板保持 mini-swe-agent 行为。每 session 独立容器，任何退出路径均清理。
+- **工具执行器**：包裹 docker/podman exec，合并管道 tee 原始输出，每次 os.read 记录一个 chunk，返回值、超时错误结果字典和 observation 模板保持 mini-swe-agent 行为。每 session 独立容器，任何退出路径均清理。
 - **引擎记录**：仅设置 TOKENMOE_TRACE_DIR 时启用，每 engine lifetime 独立目录；启动 worker 前导出 TOKENMOE_TRACE_ENGINE_DIR，TP rank 0 写 layer_map.json。engine_meta.json 记录 raw_format_version=1、有效配置、vLLM 版本、fork commit、时钟锚点和 PID。Scheduler 归集请求生命周期、计算区间与每步 routing slice；writer 线程写 steps.jsonl、requests.jsonl 和 routing/<id>.npz，shutdown 时 flush。启用 recorder 时跳过 API 路由组装，允许 upstream 保留 routed_experts: null 字段；关闭时保持 upstream 行为。
 - **启动约束**：权重加载前拒绝关闭 prefix caching、未开启 routed-experts capture、启用 speculative decoding、async scheduling 或 DP > 1 的配置；PP、DCP/PCP、KV connector 按 upstream capture 约束拒绝。serve 显式使用 --no-async-scheduling。
 - **离线关联**：按 llm_request_id 合并 producer 文件；issued_at 取 issuing request 的 inference_finished_at，llm_request_ids_consuming 从 prev_tool_call_ids 回填；解码 prompt/output、对齐片段、输出 §6 布局并运行 validator。
-- **运行与环境**：每个 run 使用新目录并关联一个 engine lifetime；harness 连接已启动的 server，脚本负责 server 生命周期。独立 harness/fork venv，tokenmoe_collect 不 import vllm。旧 torch 2.11 venv 使用 `PYTHONPATH=/home/youwei/bzh/project/TokenMoE-vllm-0722` 加载保留的 90025dce2 代码和编译产物；v0.30.0 使用新 venv。
+- **运行与环境**：每个 run 使用新目录并关联一个 engine lifetime；harness 连接已启动的 server，脚本负责 server 生命周期。harness 和模型服务使用独立环境，tokenmoe_collect 不 import vllm。环境安装和运行方式见操作指引。
 
 ### 8.2 采集矩阵
 
@@ -438,12 +457,12 @@ benchmark item x role template 集合 x model profile x seed x 并发配置
 
 | 模型               | 专家配置                          | 备注                                                         |
 | ------------------ | --------------------------------- | ------------------------------------------------------------ |
-| Qwen3-30B-A3B | 48 个 MoE 层，128 选 8 | 仅本地 A100 调试；TP=2、YaRN ×4 到 128K、qwen3 reasoning/hermes tool parser，router 捕获 |
+| Qwen3-30B-A3B | 48 个 MoE 层，128 选 8 | 本地调试；router 捕获 |
 | GPT-OSS-120B | 36 层，128 选 4，无 shared expert | Hopper 主实验；补齐 monolithic Triton MXFP4 捕获，保持原有路由运算 |
 | DeepSeek-V4-Flash | 43 层，256 选 6 加 1 shared | Hopper 主实验；默认非 MegaMoE 预期 router 路径，MegaMoE 为 capture_source；smoke 确认 backend 和 prefix cache |
-| dots3-note Preview | 256 选 8 加 1 shared，含 MTP | v0.30.0 已注册；Hopper 主实验，预期 router 路径，L 从绑定层获得；关闭 MTP，仅文本 |
+| dots3-note Preview | 256 选 8 加 1 shared，含 MTP | 主实验，预期 router 路径，L 从绑定层获得；关闭 MTP，仅文本 |
 
-fork 基于 upstream v0.30.0（ced6857afa0e），分支 tokenmoe-v0.30.0-trace。Hopper parser 与 TP 按该版本 recipe 配置、smoke 确认。每模型先核对 layer_map、一次 routed request 与引擎步，再通过规则 12 等价性测试；本次不测逐层延迟。
+模型 profile 的 MoE 层列表以实际 layer_map 为准。每个模型及新的并行配置均须通过规则 12 的等价性检查。当前采集阶段不测逐层延迟，layer_latency_profile_ref 为 null。服务配置见 configs/models/，执行步骤见操作指引。
 
 ## 10. G1、G2、G3 切分规则
 
