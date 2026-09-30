@@ -1,0 +1,26 @@
+name: gpt-oss-120b
+model_id: openai/gpt-oss-120b
+model_path: ${TOKENMOE_MODEL_ROOT}/openai/gpt-oss-120b
+revision: null
+status: confirm at smoke on Hopper
+recipe: https://recipes.vllm.ai/openai/gpt-oss-120b
+serve:
+  tensor_parallel_size: 2
+  dtype: auto
+  max_model_len: 131072
+  gpu_memory_utilization: 0.9
+  max_num_seqs: 8
+  max_num_batched_tokens: 8192
+  tool_call_parser: openai
+  reasoning_parser: null
+sampling:
+  temperature: 1.0
+  top_p: 1.0
+  max_tokens: 8192
+facts:
+  num_hidden_layers: 36
+  moe_layers: 36
+  num_routed_experts: 128
+  top_k: 4
+  num_shared_experts: 0
+expected_capture_path: monolithic

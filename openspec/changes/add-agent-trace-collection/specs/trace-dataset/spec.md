@@ -29,7 +29,7 @@ Before any session starts, the launcher SHALL write the static records of §3:
 
 It SHALL join harness and engine records on `llm_request_id`. It SHALL fill:
 - `issued_at` from the issuing request's `inference_finished_at`;
-- `llm_request_id_consuming` from `prev_tool_call_ids`;
+- `llm_request_ids_consuming` from `prev_tool_call_ids`;
 - the engine-side lifecycle fields of each request.
 
 It SHALL keep the raw files, and it SHALL run the validator at the end.
@@ -61,17 +61,17 @@ Each segment SHALL carry character and token ranges. A message that cannot be lo
 
 #### Scenario: Tool output segment
 - **WHEN** a request contains the observation of tool call `tc_x`
-- **THEN** exactly one segment has `segment_type = tool_output`, `source_tool_call_id = tc_x`, and a token range inside the request's new-prefill range, or inside the cached range if the prefix was cached
+- **THEN** one or more payload segments have `segment_type = tool_output`, `source_tool_call_id = tc_x`, and a token range inside the request's new-prefill range, or inside the cached range if the prefix was cached
 
 #### Scenario: Alignment failure
 - **WHEN** the chat template rewrote a message so that none of its text variants appear in the decoded prompt
 - **THEN** that message's segment has null ranges and a non-null `alignment_error`, and its text is covered by an `other` segment
 
 ### Requirement: Validation
-`python -m tokenmoe_collect validate <run_dir>` SHALL check the rules of `collection/data_collect.md` §7 that apply to single-loop, single-host runs: rules 1–9, 11 and 12, with rules 6–9 in their revised form. It SHALL report rules 10, 13 and 14 as `not_applicable`. It SHALL write `validation.json` with one entry per rule: status, violation count, and up to 20 example IDs. The exit code SHALL be non-zero if any applicable rule fails.
+`python -m tokenmoe_collect validate <run_dir>` SHALL check the rules of `collection/data_collect.md` §7 that apply to single-loop, single-host runs: rules 1–9, 11 and 12, with rules 6–9 in their revised form. Rules 6 and 7 SHALL join rows through `token_positions`, including holes from later cache hits. Aborted/error requests with `routing_complete = false` SHALL be checked against their actual computed positions; complete generations SHALL still require `row_end = T-1`. It SHALL report rules 10, 13 and 14 as `not_applicable`. It SHALL write `validation.json` with one entry per rule: status, violation count, and up to 20 example IDs. The exit code SHALL be non-zero if any applicable rule fails.
 
 #### Scenario: Routing shape violation
-- **WHEN** a routing file has fewer rows than `T - 1 - num_cached_tokens`
+- **WHEN** a contiguous routing file has fewer rows than its computed token_positions and matching step entries
 - **THEN** rule 6 fails and names that `llm_request_id`
 
 #### Scenario: Recompute allowed

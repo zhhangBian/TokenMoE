@@ -50,7 +50,7 @@ If a request's message list is not an append-extension of the previous request's
 - **THEN** that message's provenance marks it `tool_output` with `source_tool_call_id = tc_x`, plus the character range of the tool payload inside the message
 
 ### Requirement: Streaming tool executor
-The runner SHALL execute each agent command with `<runtime> exec` in the session's container, with stdout and stderr merged into one pipe. It SHALL tee every read of that pipe to `tool_outputs/<tool_call_id>.out` and record one chunk (`chunk_index`, `chunk_time`, `byte_offset`, `byte_length`) per read. It SHALL return to mini-swe-agent the same output and the same exceptions that mini-swe-agent's own environment returns.
+The runner SHALL execute each agent command with `<runtime> exec` in the session's container, with stdout and stderr merged into one pipe. It SHALL tee every read of that pipe to `tool_outputs/<tool_call_id>.out` and record one chunk (`chunk_index`, `chunk_time`, `byte_offset`, `byte_length`) per read. It SHALL return to mini-swe-agent the same output and the same error-result dictionaries that mini-swe-agent's own environment returns.
 
 #### Scenario: Chunk timing
 - **WHEN** a command prints one line per second for 5 seconds

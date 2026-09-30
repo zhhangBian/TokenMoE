@@ -26,8 +26,10 @@ context: |
     pull. Deliver scripts and exact commands; never assume they were run.
   - First harness: mini-swe-agent 2.4.6 on SWE-bench Verified. Other harnesses
     come later.
-  - Python >= 3.10. Two venvs: the vLLM fork venv and a separate harness venv
-    for the `collection/` package.
+  - Python >= 3.10. Two new venvs: the vLLM fork venv and a separate harness venv
+    for the `collection/` package. The old editable venv uses
+    `PYTHONPATH=/home/youwei/bzh/project/TokenMoE-vllm-0722` (preserved
+    90025dce2 source and compiled artifacts).
 
 rules:
   proposal:

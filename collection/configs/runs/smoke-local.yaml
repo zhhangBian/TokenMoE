@@ -1,0 +1,23 @@
+model_config: ../models/qwen3-30b-a3b.yaml
+mini_config: smoke-agent.yaml
+benchmark_id: tokenmoe/local-smoke
+server_url: http://127.0.0.1:8000/v1
+engine_dir: ${TOKENMOE_ENGINE_DIR}
+dataset_path: ../smoke-items.json
+instances:
+- smoke__json-1
+- smoke__unicode-1
+- smoke__stream-1
+num_concurrent_sessions: 1
+base_seed: 42
+step_limit: 5
+time_limit_seconds: 600
+tool_timeout: 30
+request_timeout: 600
+request_retries: 2
+runtime: podman
+cpu_quota: 2
+memory_limit: 2g
+output_dir: ${TOKENMOE_RUN_DIR}
+container_network: none
+create_workdir: true

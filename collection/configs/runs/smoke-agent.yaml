@@ -1,0 +1,23 @@
+agent:
+  system_template: |
+    You are a coding assistant. Use bash tool calls to create and test the requested Python program in /testbed.
+    First write the file and run its tests using bash. In a later tool call submit it with:
+    echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT; cat /testbed/solution.py
+    Every response must include a bash tool call. Keep your reasoning concise.
+  instance_template: '{{task}}'
+  cost_limit: 0
+  step_limit: 5
+environment:
+  environment_class: docker
+  cwd: /testbed
+  timeout: 30
+  interpreter: [bash, -c]
+  env:
+    PYTHONUNBUFFERED: '1'
+model:
+  model_name: qwen3-30b-a3b
+  observation_template: |
+    {% if output.exception_info %}<exception>{{output.exception_info}}</exception>{% endif %}
+    <returncode>{{output.returncode}}</returncode>
+    <output>{{output.output}}</output>
+  format_error_template: 'Use at least one bash tool call. {{error}}'

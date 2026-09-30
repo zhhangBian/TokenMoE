@@ -74,7 +74,7 @@ Phase SHALL be one of `recompute`, `new_prefill` or `decode`. Entries SHALL cove
 - **THEN** its computed ranges still appear in step entries, with a null `llm_request_id`
 
 ### Requirement: Phase classification and preemption
-For each request, the recorder SHALL track the highest token index already computed. It SHALL classify scheduled tokens below that index as `recompute`, tokens from that index up to `num_prompt_tokens` as `new_prefill`, and all later tokens as `decode`. `num_cached_tokens` SHALL be the start of the request's first scheduled range. The recorder SHALL count preemptions per request.
+For each request, the recorder SHALL track the actually covered token intervals, treating the first cached prefix as covered. Previously covered positions SHALL be `recompute`; first computations below `num_prompt_tokens` SHALL be `new_prefill`, and later first computations SHALL be `decode`. A cache hole below the high-water mark SHALL NOT be misclassified as recompute when first executed. `num_cached_tokens` SHALL be the start of the request's first scheduled range. The recorder SHALL count preemptions per request.
 
 #### Scenario: Preempted request is recomputed
 - **WHEN** a request that has computed 5,000 tokens is preempted and rescheduled from token 0 with no prefix hit
@@ -83,6 +83,10 @@ For each request, the recorder SHALL track the highest token index already compu
 #### Scenario: Prefix-cache hit
 - **WHEN** a request's first scheduled range starts at token 3,072
 - **THEN** its `num_cached_tokens` is 3,072 and no step entry covers `[0, 3072)` for that request
+
+#### Scenario: Longer cache hit after preemption
+- **WHEN** a request computes [0, 2), is preempted, then resumes at position 6 because another request populated the cache
+- **THEN** its new captured positions begin at 6 and token_positions retains the gap [2, 6), without fabricated routing
 
 ### Requirement: Request records
 When a request finishes, the recorder SHALL append one record to `requests.jsonl`. This covers normal stops, length limits, aborts and errors. The record SHALL contain:
@@ -99,11 +103,16 @@ When a request finishes, the recorder SHALL append one record to `requests.jsonl
 For every finished request that carries `tokenmoe_llm_request_id`, the recorder SHALL write `routing/<llm_request_id>.npz` with:
 - `token_ids` of length `T = num_prompt_tokens + num_output_tokens`;
 - `row_start = num_cached_tokens`;
-- `experts` of shape `[T - 1 - row_start, L, K]`;
+- `row_end`, the actual captured end position;
+- `routing_complete`, true only for complete generations with full routing;
+- `token_positions` of length R, strictly increasing absolute positions of captured rows;
+- `experts` of shape `[R, L, K]`;
 - `step_index` (one value per row);
 - `layer_ids`.
 
-Row `i` SHALL hold the logical expert IDs selected for token position `row_start + i`. These IDs SHALL be taken before any EPLB mapping, from the step slice in which the token was first computed. Expert IDs SHALL be stored as uint8 when the model has at most 256 routed experts, and as uint16 otherwise. Router weights (scores) SHALL NOT be recorded.
+A complete generation SHALL have `row_end = T-1`. Aborted and errored requests SHALL preserve their actual computed interval and set `routing_complete = false`; a never-scheduled request SHALL have an empty interval starting at zero. Routing for in-flight steps SHALL be collected before finalizing an aborted request.
+
+Row `i` SHALL hold the logical expert IDs selected for `token_positions[i]`. For contiguous coverage this is `row_start + i`. A later, longer prefix-cache hit MAY leave holes: they SHALL NOT be filled with fabricated rows or routing from another request. These IDs SHALL be taken before any EPLB mapping, from the step slice in which the token was first computed. Expert IDs SHALL be stored as uint8 when the model has at most 256 routed experts, and as uint16 otherwise. Router weights (scores) SHALL NOT be recorded.
 
 #### Scenario: Shape of a normal request
 - **WHEN** a request with 1,000 prompt tokens, 200 cached tokens and 50 output tokens finishes
@@ -113,6 +122,14 @@ Row `i` SHALL hold the logical expert IDs selected for token position `row_start
 - **WHEN** a request hits the prefix cache for its first 4,096 tokens
 - **THEN** its routing file contains no rows for positions below 4,096
 
+#### Scenario: Aborted during chunked prefill
+- **WHEN** a 10,000-token prompt is aborted after computing its first 2,048 tokens with no prefix hit
+- **THEN** its routing has row_start 0, row_end 2048, 2048 rows, and routing_complete false
+
+#### Scenario: Aborted during an executing decode step
+- **WHEN** the final known token is computed but the request is aborted before appending the next sampled token
+- **THEN** its routing preserves that computed row, row_end may equal T, and routing_complete is false
+
 ### Requirement: GPT-OSS monolithic Triton MXFP4 capture
 The fork SHALL support routed-experts capture on the monolithic Triton MXFP4 expert kernel that GPT-OSS uses on Hopper. The kernel's routing arithmetic SHALL stay unchanged. Binding capture on that kernel SHALL NOT raise.
 
@@ -121,11 +138,11 @@ The fork SHALL support routed-experts capture on the monolithic Triton MXFP4 exp
 - **THEN** startup succeeds, `layer_map.json` lists 36 layers on the `monolithic` path, and routing rows hold 4 distinct IDs in `[0, 128)`
 
 ### Requirement: API response suppression
-While the recorder is enabled, the fork SHALL NOT assemble routed experts into engine outputs. OpenAI-compatible responses SHALL therefore carry no `routed_experts` field.
+While the recorder is enabled, the fork SHALL NOT assemble routed experts into engine outputs. OpenAI-compatible responses SHALL therefore carry no routed-experts payload; an upstream `routed_experts: null` field is allowed.
 
 #### Scenario: Chat completion under the recorder
 - **WHEN** a chat completion is served with the recorder enabled
-- **THEN** the response has no `routed_experts` payload, and the routing is only in the trace directory
+- **THEN** the response has no non-null `routed_experts` payload, and the routing is only in the trace directory
 
 ### Requirement: Non-blocking trace writing
 All trace file I/O SHALL happen on a writer thread. On engine shutdown, the recorder SHALL flush and close every file.

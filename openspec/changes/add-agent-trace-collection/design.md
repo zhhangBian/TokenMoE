@@ -130,14 +130,16 @@ Upstream's slot buffer stays in place; the recorder simply does not read it.
 
 ### D4. Phases, entries and `num_cached_tokens` (decision C7a)
 
-- Per request, the recorder keeps `hwm`: the highest token index this request has computed. It starts at the `num_computed_tokens` of the first schedule.
-- A scheduled range `[s, e)` is split with `P = num_prompt_tokens`:
+- Per request, retain the actual covered intervals. The initial cached prefix
+  `[0, num_cached_tokens)` starts as covered. The highest end remains `hwm`,
+  but a later cache hit may leave holes below it (Q9).
+- Split scheduled ranges by coverage and by `P = num_prompt_tokens`:
 
   | Tokens | Phase |
   |---|---|
-  | `< hwm` | `recompute` |
-  | `[hwm, P)` | `new_prefill` |
-  | `≥ max(hwm, P)` | `decode` |
+  | Already covered | `recompute` |
+  | First computation below P | `new_prefill` |
+  | First computation at/above P | `decode` |
 
 - A range that crosses a boundary produces several entries for the same request in the same step.
 - `num_cached_tokens` = the `s` of the request's first entry. This is the local prefix-cache hit, since KV connectors are refused. v0.30.0 keeps that number only inside `prefill_stats` (`scheduler.py:999-1006`).
@@ -256,8 +258,11 @@ Everything goes under `$TOKENMOE_TRACE_DIR/<engine_instance_id>/`, the directory
   |---|---|
   | `token_ids` | `[T]` int32 |
   | `row_start` | scalar, = `num_cached_tokens` |
-  | `experts` | `[T-1-row_start, L, K]`; uint8 when E ≤ 256, else uint16 (Q5) |
-  | `step_index` | `[rows]` int32 |
+  | `experts` | `[R, L, K]`; uint8 when E ≤ 256, else uint16 (Q5) |
+  | `row_end` | scalar, actual captured end; `T-1` for a complete generation |
+  | `routing_complete` | bool; false for aborts/errors |
+  | `token_positions` | `[R]` int32, strictly increasing absolute positions |
+  | `step_index` | `[R]` int32 |
   | `layer_ids` | `[L]` |
 
 **Runtime behaviour.**
@@ -281,7 +286,7 @@ We drive `DefaultAgent` ourselves instead of using `mini-extra swebench`, with t
 
 **`TracedEnvironment`**
 - It keeps mini-swe-agent's docker environment container lifecycle, with the runtime binary configurable (`podman` locally).
-- It replaces `execute()` with the streaming executor (D12). It returns the same result shape and raises the same timeout exception, so agent logic and observation templates stay unchanged.
+- It replaces `execute()` with the streaming executor (D12). It returns the same result shape and returns the same timeout error dictionary, so agent logic and observation templates stay unchanged.
 
 **Other points.**
 - The launcher passes the image name itself. It also starts, stops and removes one container per session.
@@ -290,13 +295,56 @@ We drive `DefaultAgent` ourselves instead of using `mini-extra swebench`, with t
   - how litellm handles `reasoning` for `hosted_vllm` is unverified.
 - The exact override points (class and method names) are assumptions until checked against the installed 2.4.6 source (task 3.1).
 
+### A1 source verification (2026-09-30)
+
+Installed `mini-swe-agent==2.4.6` and the D19 dependencies into
+`/home/youwei/bzh/venvs/tokenmoe-harness`; `pip check` passed. Source paths
+below are relative to its `lib/python3.12/site-packages/minisweagent/`.
+
+- `agents/default.py`: `DefaultAgent.run(task, **kwargs)` returns the exit
+  message's `extra` dict. `query()` checks limits and increments `n_calls`;
+  `execute_actions()` executes parsed action dicts **sequentially**, then calls
+  `model.format_observation_messages`. Limits are `LimitsExceeded` and
+  `TimeExceeded`; submission is `Submitted`, an `InterruptAgentFlow` subtype.
+- `models/litellm_model.py`: transport is `_query()`, preparation is
+  `_prepare_messages_for_api()`, parsing is `_parse_actions()`. Reusing
+  `query()` would retain its own retry/cost logic, so the adapter must replace
+  `query()` and transport while using the installed parser/formatter helpers.
+- `models/utils/actions_toolcall.py`: `BASH_TOOL`,
+  `parse_toolcall_actions` (expects tool-call objects with `.function` and `.id`),
+  and `format_toolcall_observation_messages` are the reusable hooks. Action
+  dicts contain `command` and the model's `tool_call_id`; preserve this API ID
+  separately from the collector's globally unique `tc_` ID.
+- `environments/docker.py`: `execute(action: dict, cwd="", *, timeout=None)`
+  merges stderr into stdout with UTF-8 replacement and universal newlines.
+  It catches `subprocess.TimeoutExpired` and other exceptions and returns
+  `output`, `returncode=-1`, `exception_info`, plus `extra.exception_type` and
+  `extra.exception`. It does **not** propagate TimeoutExpired. `_check_finished`
+  raises Submitted for the completion sentinel. `config.executable` selects
+  docker/podman. The stock `cleanup()` backgrounds a shell command, so a
+  guaranteed-cleanup wrapper must wait for container removal.
+- `config/benchmarks/swebench.yaml`: installed tool-calling benchmark config;
+  cwd `/testbed`, timeout 60, interpreter `[bash, -c]`,
+  `BASH_ENV=/root/.bashrc`. Its observation template keeps output under 10,000
+  characters; otherwise it keeps the first/last 5,000 characters in separate
+  `<output_head>` and `<output_tail>` blocks with intervening scaffold text.
+- `run/benchmarks/swebench.py:get_swebench_docker_image_name`: explicit
+  `image_name`, then `docker_image`, otherwise
+  `docker.io/swebench/sweb.eval.x86_64.<instance_id with __ replaced by _1776_>:latest`,
+  lowercased.
+
+The user confirmed the installed timeout/interpreter contract and multi-span
+provenance on 2026-09-30. The adapter uses Jinja string-conversion markers to
+locate each payload slice and verifies that removing markers exactly restores
+the installed formatter output; it does not alter the observation.
+
 ### D12. Streaming tool executor
 
-- It runs `Popen([runtime, "exec", "-w", cwd, <container>, "bash", "-lc", cmd], stdout=PIPE, stderr=STDOUT, bufsize=0)`. This is the same merged stream mini-swe-agent uses (C2).
+- It runs `Popen([runtime, "exec", "-w", cwd, <container>, "bash", "-c", cmd], stdout=PIPE, stderr=STDOUT, bufsize=0)`. This is the same merged stream mini-swe-agent uses (C2).
 - A `select` + `os.read(fd, 65536)` loop with a deadline handles output. Every read:
   - appends to `tool_outputs/<tool_call_id>.out`;
   - writes one chunk record: `chunk_index`, `chunk_time`, `byte_offset`, `byte_length`.
-- On the deadline it kills the exec process, marks `timed_out`, and raises the exception mini-swe-agent expects, carrying the partial output.
+- On the deadline it kills the exec process, marks `timed_out`, and returns the installed environment's error result dictionary, carrying the partial output.
 - `started_at` is taken just before `Popen`; `finished_at` after `wait()`.
 - `output_bytes_raw` is the file size. `output_bytes_seen` is the byte length of the observation the agent actually receives.
 
@@ -323,7 +371,7 @@ We drive `DefaultAgent` ourselves instead of using `mini-extra swebench`, with t
 
 **Join and output.**
 - `finalize` joins harness and engine requests on `llm_request_id`.
-- It fills cross-producer fields: `issued_at`, `llm_request_id_consuming`, `first_scheduled_at`, and so on.
+- It fills cross-producer fields: `issued_at`, `llm_request_ids_consuming`, `first_scheduled_at`, and so on.
 - It writes the §6 layout:
   - jsonl for small tables;
   - parquet for `prompt_segments`, `tool_output_chunks`, `engine_steps` and `host_load`;
@@ -406,7 +454,7 @@ If a message cannot be located:
 
 `estimate.py` implements the formulas below; the pilot replaces the assumptions with measured values.
 
-**Per computed token.** Expert IDs take `L·K` bytes (uint8 when E ≤ 256). No scores are stored (D6).
+**Per computed token.** Expert IDs take `L·K` bytes (uint8 when E ≤ 256). The int32 step indices and absolute token positions add 8 bytes per computed token. No scores are stored (D6).
 
 **Planning assumptions.** They drive every number below:
 - 60 steps per session;
@@ -516,6 +564,38 @@ Answered by the user on 2026-09-30:
 | Q6 | The equivalence record is keyed by `engine_config_id`, and rule 12 is reworded to match (D16, D17). |
 | Q7 | A new venv for the v0.30.0 fork; the old venv stays (D19). |
 
+### Q8. Partial routing on aborted/error requests (confirmed 2026-09-30 during implementation)
+
+The user approved adding `row_end` and `routing_complete`. Normal completed generations retain `row_end = T-1`. Aborted/error requests keep only their actual captured interval `[row_start, row_end)` and set `routing_complete = false`; rules 6 and 7 validate that interval. A never-scheduled request has an empty interval starting at zero. An abort processed after model execution may have computed the final known token without appending a new sampled token, so its `row_end` may equal `T`. When an abort frees a request before `update_from_output`, defer recorder finalization until the pending step routing has been collected. The engine request snapshot must survive that free.
+
+### Q9. Non-contiguous routing after a later cache hit (confirmed 2026-09-30)
+
+The user approved `token_positions[R]`: each saved row explicitly names its
+absolute token position. `row_start` remains the first-schedule cache hit and
+`row_end` the captured end. Normal contiguous requests retain the old interval
+invariant; a request can have fewer rows if a later, longer prefix-cache hit
+skips positions it has never computed. See `scheduler.py:_get_local_prefix_cache_hit`
+and the waiting/preempted request scheduling path (upstream lines 889–1006).
+
+Phase classification must therefore track actual covered intervals, rather
+than only hwm: previously captured positions and the initial cached prefix are
+recompute; a previously skipped hole, when first executed, is new_prefill or
+decode. The writer sorts rows by token position while retaining their original
+step indices. Rules 6/7 join entries to token_positions. For a normal generation,
+routing_complete means all actually computed rows were captured; cache holes
+are not missing capture. Aborts/errors still set it false (Q8).
+
 ## Open Questions
 
 None at design time. The remaining unknowns are assumptions A1–A10, each with the check that settles it.
+
+### Implementation decisions confirmed 2026-09-30
+
+- Q10: Keep mini-swe-agent 2.4.6 timeout-result dictionaries and the SWE-bench bash -c interpreter with BASH_ENV.
+- Q11: Tool output provenance carries multiple payload ranges; a call may produce several tool_output segments with scaffold between them.
+- Q12: llm_request_ids_consuming is a list, including every retry attempt that carries the observation.
+- Local verification scope: use the existing Qwen3-30B-A3B weights (the user accepted this in place of Instruct-2507). Docker Hub timed out, so the user approved three local Python-container smoke tasks, explicitly labeled tokenmoe/local-smoke. This does not constitute SWE-bench scoring or a Hopper pilot.
+- v0.30.0 treats YaRN max_position_embeddings as already scaled; the Qwen HF overrides therefore set it to 131072 alongside factor 4 and original_max_position_embeddings 32768.
+
+- Q13: Local smoke containers use --network=none; the tasks do not require networking and rootless /dev/net/tun is unavailable.
+- Q14: API suppression means no non-null routing payload; retain upstream routed_experts: null serialization.

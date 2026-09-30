@@ -1,0 +1,20 @@
+[
+  {
+    "instance_id": "smoke__json-1",
+    "repo": "tokenmoe/smoke-json",
+    "image_name": "docker.io/library/python:3.11-slim",
+    "problem_statement": "Create /testbed/solution.py with a function total(items) that sums the numeric amount fields in a list of dictionaries, treating missing fields as zero. Test it with empty input and [{\"amount\": 2}, {}, {\"amount\": 3}]. Print a short test result, then submit the file."
+  },
+  {
+    "instance_id": "smoke__unicode-1",
+    "repo": "tokenmoe/smoke-unicode",
+    "image_name": "docker.io/library/python:3.11-slim",
+    "problem_statement": "Create /testbed/solution.py with word_counts(text) using Python str.split and counting each distinct word. Test Chinese words and repeated English words. Print the counts, then submit the file."
+  },
+  {
+    "instance_id": "smoke__stream-1",
+    "repo": "tokenmoe/smoke-stream",
+    "image_name": "docker.io/library/python:3.11-slim",
+    "problem_statement": "Create /testbed/solution.py that prints progress 1, 2, 3 with flush=True and a 0.2 second sleep between each line, then prints done. Run it, inspect its output, and submit the file."
+  }
+]

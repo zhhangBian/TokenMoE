@@ -1,0 +1,19 @@
+model_config: ../models/qwen3-30b-a3b.yaml
+server_url: http://127.0.0.1:8000/v1
+engine_dir: ${TOKENMOE_ENGINE_DIR}
+dataset_path: /home/youwei/bzh/dataset/princeton-nlp/SWE-bench_Verified
+instances:
+  - astropy__astropy-12907
+  - django__django-10097
+  - sympy__sympy-11618
+num_concurrent_sessions: 1
+base_seed: 42
+step_limit: 5
+time_limit_seconds: 600
+tool_timeout: 60
+request_timeout: 600
+request_retries: 2
+runtime: podman
+cpu_quota: 2
+memory_limit: 4g
+output_dir: ${TOKENMOE_RUN_DIR}

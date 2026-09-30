@@ -48,7 +48,7 @@ The pipeline therefore has to be rebuilt on vLLM v0.30.0 before any Stage A anal
   - rewrite the root README as a short index.
 - **BREAKING (collection spec):**
   - The spec moves: `#data_collect.md` → `collection/data_collect.md`.
-  - Routing arrays hold only tokens that the request itself computed: rows cover `[num_cached_tokens, T-1)`. Cached-prefix routing is no longer re-exposed.
+  - Routing arrays hold only tokens that the request itself computed: normal contiguous rows cover `[num_cached_tokens, T-1)`. User-approved implementation revisions add `row_end`/`routing_complete` for partial requests and `token_positions` for later cache-hit gaps. Cached-prefix routing is no longer re-exposed.
   - Request metadata changes from `extra_body.tokenmoe` to a single key, `vllm_xargs.tokenmoe_llm_request_id`. Session, template and step metadata stay on the harness side and are joined offline.
   - Each tool call gets one merged raw output file instead of separate `stdout` and `stderr`.
   - Expert IDs are stored as uint8 when a model has at most 256 routed experts (uint16 otherwise).

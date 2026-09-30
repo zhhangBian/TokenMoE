@@ -1,0 +1,30 @@
+name: dots3-note
+model_id: dots-studio/dots3-note-prev
+model_path: ${TOKENMOE_MODEL_ROOT}/dots-studio/dots3-note-prev
+revision: null
+status: confirm at smoke on Hopper; read L from the actual bound layer map
+recipe: https://recipes.vllm.ai/dots-studio/dots3-note-prev
+config_source: https://huggingface.co/dots-studio/dots3-note-prev/raw/main/config.json
+serve:
+  tensor_parallel_size: 8
+  dtype: bfloat16
+  max_model_len: 131072
+  gpu_memory_utilization: 0.9
+  max_num_seqs: 8
+  max_num_batched_tokens: 8192
+  block_size: 64
+  tool_call_parser: dots
+  reasoning_parser: null
+  language_model_only: true
+sampling:
+  temperature: 1.0
+  top_p: 1.0
+  max_tokens: 8192
+facts:
+  num_hidden_layers: 46
+  moe_layers: 45
+  first_k_dense_replace: 1
+  num_routed_experts: 256
+  top_k: 8
+  num_shared_experts: 1
+expected_capture_path: router
