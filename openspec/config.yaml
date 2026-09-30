@@ -1,20 +1,39 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  TokenMoE is a research prototype: agent-metadata-conditioned MoE expert
+  demand prediction for serving (see `#idea.md` at the repo root).
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Current scope is data collection only. All collection code, configs, scripts
+  and docs live in one self-contained directory, `collection/`. Other sub-works
+  (predictors, simulators, runtime) will get their own directories later; do
+  not add placeholders for them.
+
+  - Authoritative collection spec: `collection/data_collect.md`. Records,
+    storage layout and validation rules come from it; any deviation must be
+    written back into it in the same change.
+  - vLLM fork: git submodule `vllm/` (remote zhhangBian/TokenMoE-vLLM), based on
+    upstream tag v0.30.0 (commit ced6857afa0ea7b2e3f0846a62e1394e90f15607).
+    Fork edits are Python-only so the fork installs with
+    `VLLM_USE_PRECOMPILED=1`. Edit the fork directly; do not over-engineer for
+    extensibility.
+  - Routing comes only from vLLM routed-experts capture in the fork. No
+    Transformers-backend or recomputed-router fallback.
+  - Hardware: real collection runs on borrowed Hopper GPUs with DeepSeek-V4-Flash,
+    dots3-note and GPT-OSS-120B. The local 7xA100 host is for code debugging
+    only, with Qwen3-30B-A3B.
+  - The user executes every GPU run, download, install, git fetch and image
+    pull. Deliver scripts and exact commands; never assume they were run.
+  - First harness: mini-swe-agent 2.4.6 on SWE-bench Verified. Other harnesses
+    come later.
+  - Python >= 3.10. Two venvs: the vLLM fork venv and a separate harness venv
+    for the `collection/` package.
+
+rules:
+  proposal:
+    - State which sections of `collection/data_collect.md` the change touches.
+  design:
+    - Cite the vLLM fork file path at the pinned tag for every engine hook.
+    - Separate verified facts from assumptions that need a smoke test.
+  tasks:
+    - Prefix steps the user must execute (GPU runs, downloads, installs, pulls) with "[user]".
