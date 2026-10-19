@@ -234,3 +234,15 @@ smoke 检查一条真实请求的层数、路由和引擎步记录：
 | `engine_config_id` 不匹配 | 使用当前模型配置重跑等价性验证 |
 | pilot/full 校验失败或超时 | N1/N4 的结果 JSON，以及 `engine-N*/server.log` |
 | 输出目录已存在 | 保留旧目录，另建实验目录 |
+
+## Local Qwen execution ownership
+
+For `local-qwen3-runtime-v1`, the executing agent performs authorized environment repairs, missing-asset downloads, image pulls, GPU runs, collection-fault diagnosis, and recovery. This local authorization supersedes historical instructions requiring the user to execute every command. Existing formal remote workflows retain their arrangements.
+
+Use the [local Qwen commands](README.md#local-qwen-runtime-collection) and a new experiment directory under `/home/youwei/bzh/dataset/tokenmoe_artifacts/`. Keep main/fork commits, uncommitted patch and source hashes, model/tokenizer/dataset provenance, actual GPU UUIDs, image IDs/digests, and measured container limits. Native rootless Podman with `--network=none` has been verified locally for 2 CPU/4 GiB limits and a shared host boot clock; recheck the actual benchmark image before collecting.
+
+The supervisor owns only its launched processes and uniquely named task containers. A collection error preserves logs and marks the experiment `needs_repair`; diagnose the original input, repair the issue, and resume affected units in new attempt directories. Model task failures remain valid observations when collection integrity holds. Do not replace tool output, inject solutions, relax capture equivalence, or discard failures to improve task metrics.
+
+`health_checks.jsonl` contains 30-minute process/progress snapshots. `run_local.py --check-only` reads immediate health. Hand off the experiment path, `collection_manifest.json`, active process identity, latest health check, recovery events, report/checksum paths, and outstanding units. The local monitor is not an app automation or a promise of chat notifications after the active agent session ends.
+
+The completed local reference delivery is `/home/youwei/bzh/dataset/tokenmoe_artifacts/qwen3-runtime-20261019-063626/`. Its 40 primary units are valid; read `reports/runtime_summary.md`, `reports/data_notes.md`, `reports/coverage.json` and `reports/artifact_checksums.json` before downstream use. N1/N4 have the same model profile and role version, while pilot and diagnostic stages remain separate. Prompt readers preserve CRLF, and Parquet export retains optional evidence fields appearing after the first row. The historical rejection replay remains explicitly distinguished from a captured original error body.

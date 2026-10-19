@@ -4,6 +4,7 @@ import errno
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tokenizers import Tokenizer
 
+from .admission import rejection_fields
 from .align import align_prompt
 from .jsonl import JsonlWriter, read_jsonl, write_json
 
@@ -31,7 +33,10 @@ def link_file(source, target):
 
 def write_table(path, rows):
     # Empty tables still produce a readable parquet file.
-    pq.write_table(pa.Table.from_pylist(rows), path)
+    # Arrow infers column names from the first row; retain optional fields in later rows.
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    normalized = [{key: row.get(key) for key in columns} for row in rows]
+    pq.write_table(pa.Table.from_pylist(normalized), path)
 
 
 def finalize(run_dir):
@@ -60,6 +65,31 @@ def finalize(run_dir):
         ]
     metadata = json.loads((engine_dir / "engine_meta.json").read_text())
     profile = next(read_jsonl(root / "static/model_profiles.jsonl"))
+    run_config = (
+        json.loads((root / "run_config.json").read_text())
+        if (root / "run_config.json").exists()
+        else {}
+    )
+    template_evidence = {}
+    if run_config.get("collection_profile") == "local-qwen3-runtime-v1":
+        fork = os.environ.get("TOKENMOE_FORK_VENV")
+        if fork:
+            evidence_path = root / "reports/template_evidence.json"
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            with (root / "reports/template_probe.log").open("a") as log:
+                check = subprocess.run(
+                    [
+                        str(Path(fork) / "bin/python"),
+                        str(Path(__file__).with_name("template_probe.py")),
+                        str(root),
+                        str(evidence_path),
+                    ],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=300,
+                )
+            if check.returncode == 0:
+                template_evidence = json.loads(evidence_path.read_text())
     tokenizer = Tokenizer.from_file(profile["tokenizer_path"])
     engine_requests = {
         row["llm_request_id"]: row
@@ -73,7 +103,7 @@ def finalize(run_dir):
     (runtime / "prompts").mkdir()
     requests, segments = [], []
     reconstructed = {}
-    alignment = {"message_fields": 0, "located": 0, "failed": 0}
+    alignment = {"message_fields": 0, "located": 0, "failed": 0, "template_omitted": 0}
     for raw in sorted(
         harness["llm_requests"], key=lambda r: (r["request_created_at"], r["llm_request_id"])
     ):
@@ -97,7 +127,15 @@ def finalize(run_dir):
         )
         engine = engine_requests.get(rid)
         if engine is None:
-            row["request_status"] = "engine_record_missing"
+            rejection = (
+                rejection_fields(raw)
+                if run_config.get("collection_profile") == "local-qwen3-runtime-v1"
+                else None
+            )
+            if rejection:
+                row.update(rejection)
+            else:
+                row["request_status"] = "engine_record_missing"
         else:
             row.update(engine)
             if engine.get("routing_file"):
@@ -110,7 +148,15 @@ def finalize(run_dir):
                     tokens = data["token_ids"].tolist()
                     prompt_tokens = tokens[: row["num_prompt_tokens"]]
                     prompt, request_segments, metrics = align_prompt(
-                        tokenizer, prompt_tokens, messages, provenance, rid
+                        tokenizer,
+                        prompt_tokens,
+                        messages,
+                        provenance,
+                        rid,
+                        template_omissions={
+                            (item["message_index"], item["message_field"]): item
+                            for item in template_evidence.get(rid, {}).get("omitted_fields", [])
+                        },
                     )
                     segments.extend(request_segments)
                     for key in alignment:
@@ -195,7 +241,16 @@ def finalize(run_dir):
         | {
             "location_rate": alignment["located"] / alignment["message_fields"]
             if alignment["message_fields"]
-            else 1.0
+            else 1.0,
+            "rendered_location_rate": alignment["located"]
+            / (alignment["message_fields"] - alignment["template_omitted"])
+            if alignment["message_fields"] > alignment["template_omitted"]
+            else None,
+            "rendered_denominator": alignment["message_fields"] - alignment["template_omitted"],
+            "unexpected_failures": alignment["failed"] - alignment["template_omitted"],
+            "rendered_rate_null_reason": None
+            if alignment["message_fields"] > alignment["template_omitted"]
+            else "No rendered message fields",
         },
     )
     from .validate import validate

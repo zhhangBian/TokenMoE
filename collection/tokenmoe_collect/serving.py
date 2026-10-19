@@ -68,6 +68,11 @@ def pull_images(run_config):
     )
     dataset_path = (config_path.parent / Path(config["dataset_path"]).expanduser()).resolve()
     for item in load_benchmark(dataset_path, config["instances"]):
+        if config.get("collection_profile") == "local-qwen3-runtime-v1":
+            cached = subprocess.run([*prefix, "image", "exists", image_name(item)], check=False, capture_output=True)
+            if cached.returncode == 0:
+                print(f"Reusing cached task image: {image_name(item)}", flush=True)
+                continue
         args = [*prefix, "pull", image_name(item)]
         print(shlex.join(args), flush=True)
         subprocess.run(args, check=True)

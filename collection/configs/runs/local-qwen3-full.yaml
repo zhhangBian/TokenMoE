@@ -1,0 +1,37 @@
+collection_profile: local-qwen3-runtime-v1
+model_config: ../models/qwen3-30b-a3b-local.yaml
+dataset_path: /home/youwei/bzh/dataset/princeton-nlp/SWE-bench_Verified
+instances:
+- astropy__astropy-12907
+- django__django-10097
+- matplotlib__matplotlib-13989
+- mwaskom__seaborn-3069
+- pallets__flask-5014
+- psf__requests-1142
+- pydata__xarray-2905
+- pylint-dev__pylint-4551
+- pytest-dev__pytest-10051
+- scikit-learn__scikit-learn-10297
+- sphinx-doc__sphinx-10323
+- sympy__sympy-11618
+- astropy__astropy-13033
+- django__django-10554
+- matplotlib__matplotlib-14623
+- mwaskom__seaborn-3187
+- psf__requests-1724
+- pydata__xarray-3095
+- pylint-dev__pylint-4604
+- pytest-dev__pytest-10081
+num_concurrent_sessions: 1
+concurrency_matrix: [1, 4]
+base_seed: 42
+step_limit: 20
+time_limit_seconds: 900
+tool_timeout: 60
+request_timeout: 600
+request_retries: 2
+runtime: podman
+container_network: none
+cpu_quota: 2
+memory_limit: 4g
+output_dir: ${TOKENMOE_RUN_DIR}

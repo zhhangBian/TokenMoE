@@ -72,7 +72,7 @@ Engine hooks use the corresponding files at pinned upstream baseline `v0.30.0` (
 | Startup validation, trace-directory export, and step dispatch/completion timing | EngineCore initialization/step paths in `vllm/vllm/v1/engine/core.py`, calling the fork-added `vllm/vllm/tokenmoe_trace.py` |
 | Request lifecycle, scheduled ranges, preemption, first token, completion, and routing-slice attribution | schedule, update_from_output, preempt, and finish paths in `vllm/vllm/v1/core/sched/scheduler.py` |
 | Original Qwen MoE router results and bound-layer map | `vllm/vllm/model_executor/models/qwen3_moe.py` and `vllm/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py` |
-| Current-step routing device-to-host data and slot mapping | Capturer initialization and model-output paths in `vllm/vllm/v1/worker/gpu_model_runner.py` |
+| Current-step routing device-to-host data and slot mapping | Capturer initialization and model-output paths in `vllm/vllm/v1/worker/gpu_model_runner.py` and the V2 runner `vllm/vllm/v1/worker/gpu/model_runner.py`; the local smoke verified the existing V2 capture path |
 | Reasoning-field adaptation for the chat template | Assistant-message parsing in `vllm/vllm/entrypoints/chat_utils.py`, checked against the local tokenizer template and actual engine prompt |
 
 `tokenmoe_trace.py` is a fork addition absent from the baseline tag. Reuse these hooks and repair them only when execution evidence identifies a defect. All fork edits remain Python-only, preserving router arithmetic and actual routing without a Transformers fallback.
@@ -86,6 +86,8 @@ A planned unit has key `(benchmark_item_id, concurrency, base_seed, protocol_id)
 Preserve submissions, incorrect solutions, failing pytest runs, nonzero tool exits, format errors, and budget exhaustion. A terminated session with real requests and valid computation records can count toward coverage. Startup failures without real inference, lost engine records, corrupt files, and incomplete finalization require repair/recollection. Report missing tool-consumption relationships or decode demand in otherwise valid sessions without inventing transition samples.
 
 Recovery follows this sequence: preserve original inputs/outputs/logs and configuration, identify the failing component, repair it, run a bounded check with the original failing input, and recollect affected units. HTTP retries retain existing step/attempt semantics. Server restarts and task reruns use new application/session/request IDs and directories, linked through `recovery_events.jsonl`. Each event records time, fault category, old/new IDs and paths, command/parameter summaries, repair version, and verification result. Failures elsewhere do not trigger recollection of already valid units.
+
+Real N1 execution exposed a context-budget rejection: a 28,969-token prompt plus a 4,096-token output budget exceeds the configured 32,768-token context. This API validation occurs before engine admission. Preserve such failed requests with explicit rejection evidence and null engine lifecycle/token/routing artifacts. Future captures retain actual HTTP error bodies; historical missing bodies require disclosed exact-input replay evidence matching model/messages/tools/sampling/seed and engine configuration, with no original/probe engine records. Original response bodies remain marked unavailable when only replay evidence exists. Preserve earlier real routing, and continue rejecting missing data for any admitted/computed request. This correction does not change serving or sampling parameters.
 
 ### 6. Align reasoning against the actual engine prompt
 
@@ -111,7 +113,7 @@ Add collection-operation records and `reports/` alongside the existing `static/r
   reports/artifact_checksums.json
 ```
 
-Each independent run directory retains `static/`, `raw/`, and `runtime/` and can contain multiple sessions. Document concrete CLI arguments in README/HANDOFF during implementation, including a dry-run that expands Qwen tasks and paths. Proposed arguments are not presented as existing interfaces.
+Each independent run directory retains `static/`, `raw/`, and `runtime/` and can contain multiple sessions. The implemented CLI is `collection/scripts/run_local.py`, which supports explicit stages, recovery, dry-run, and read-only health checks. `tool-smoke` executes the three local tool tasks separately from the single-request `smoke` stage. Per-stage `source_snapshots/` record the collector code actually launched. Checksums cover immutable artifacts and list excluded mutable control/health files explicitly.
 
 Report task coverage, outcomes and fault categories, request/tool/step/chunk counts, prompt/output/cached/computed/recompute tokens, and expert lookup counts by layer and new_prefill/decode phase for each concurrency setting. Recompute lookup histograms from first-computation routing rows without claiming prediction hit rates or cache acceleration. Separately report coverage linking tool-output payloads to actual new prefill, retaining cache-hit labels for cached payloads.
 

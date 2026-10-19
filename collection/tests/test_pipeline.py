@@ -38,7 +38,7 @@ class FakeHost:
 
 
 @pytest.fixture
-def finalized_run(tmp_path):
+def finalized_run(tmp_path, request):
     tokenizer = Tokenizer.from_file(str(MODEL / "tokenizer.json"))
     engine = tmp_path / "engine/eng_fixture"
     (engine / "routing").mkdir(parents=True)
@@ -57,6 +57,7 @@ def finalized_run(tmp_path):
     (engine / "requests.jsonl").touch()
     (engine / "steps.jsonl").touch()
     calls = []
+    prompt_newline = getattr(request, "param", "\n")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -86,8 +87,8 @@ def finalized_run(tmp_path):
                     }
                 ],
             }
-            prompt = "\n".join(
-                (m.get("reasoning") or "") + "\n" + (m.get("content") or "")
+            prompt = prompt_newline.join(
+                (m.get("reasoning") or "") + prompt_newline + (m.get("content") or "")
                 for m in body["messages"]
             )
             prompt_tokens = tokenizer.encode(prompt, add_special_tokens=False).ids
@@ -229,6 +230,14 @@ def test_real_agent_fake_transport_roundtrip(finalized_run):
     assert json.loads((root / "alignment.json").read_text())["location_rate"] == 1.0
     with pytest.raises(FileExistsError):
         run(root.parent / "run.yaml", sampler_source=FakeHost())
+
+
+@pytest.mark.parametrize("finalized_run", ["\r\n"], indirect=True)
+def test_prompt_character_ranges_preserve_crlf_newlines(finalized_run):
+    root, _, _ = finalized_run
+    request = next(read_jsonl(root / "runtime/llm_requests.jsonl"))
+    assert b"\r\n" in (root / request["prompt_ref"]).read_bytes()
+    assert validate(root)["passed"]
 
 
 def test_long_output_has_two_payload_segments_and_unicode_offsets():

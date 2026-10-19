@@ -8,13 +8,19 @@ from pathlib import Path
 
 import yaml
 
-MODEL_NAMES = ("gpt-oss-120b", "deepseek-v4-flash", "dots3-note")
+REMOTE_MODELS = ("gpt-oss-120b", "deepseek-v4-flash", "dots3-note")
+MODEL_NAMES = (*REMOTE_MODELS, "qwen3-30b-a3b")
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs/models"
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES))
+    parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(REMOTE_MODELS))
+    parser.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="Verify local assets and restore only missing or damaged targets",
+    )
     parser.add_argument(
         "--model-root", type=Path, help="Root containing <provider>/<model> directories"
     )
@@ -81,6 +87,11 @@ def main(argv=None):
     from huggingface_hub import snapshot_download
 
     for job in jobs:
+        if args.only_missing:
+            from tokenmoe_collect.assets import restore_asset
+
+            restore_asset(job, max_workers=args.max_workers, endpoint=args.endpoint)
+            continue
         snapshot_download(
             **job,
             max_workers=args.max_workers,

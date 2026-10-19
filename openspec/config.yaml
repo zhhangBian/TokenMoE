@@ -19,11 +19,13 @@ context: |
     extensibility.
   - Routing comes only from vLLM routed-experts capture in the fork. No
     Transformers-backend or recomputed-router fallback.
-  - Hardware: real collection runs on borrowed Hopper GPUs with DeepSeek-V4-Flash,
-    dots3-note and GPT-OSS-120B. The local 7xA100 host is for code debugging
-    only, with Qwen3-30B-A3B.
-  - The user executes every GPU run, download, install, git fetch and image
-    pull. Deliver scripts and exact commands; never assume they were run.
+  - Hardware: formal collection uses borrowed Hopper GPUs with DeepSeek-V4-Flash,
+    dots3-note and GPT-OSS-120B. Local Qwen3-30B-A3B runtime collection uses
+    the actual available A100 devices discovered before each run.
+  - For the local Qwen profile, the executing agent owns authorized installs,
+    missing-asset downloads, image pulls, GPU runs, fault repair and recovery.
+    Preserve real failure traces and report actual execution evidence.
+    Other collection workflows retain their existing execution arrangements.
   - First harness: mini-swe-agent 2.4.6 on SWE-bench Verified. Other harnesses
     come later.
   - Python >= 3.10. Two new venvs: the vLLM fork venv and a separate harness venv

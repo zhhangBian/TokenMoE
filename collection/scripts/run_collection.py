@@ -30,7 +30,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--stage",
-        choices=["smoke", "equiv", "check-runtime", "pull-images", "pilot", "full"],
+        choices=["smoke", "equiv", "overhead", "check-runtime", "pull-images", "pilot", "full"],
         required=True,
     )
     parser.add_argument("--model-config", type=Path, help="Required for smoke/equiv")
@@ -87,7 +87,7 @@ def main(argv=None):
         model_config = args.model_config.expanduser().resolve()
         output = args.output_dir.expanduser().resolve()
         dataset = args.dataset_dir.expanduser().resolve() if args.dataset_dir else None
-    if args.stage == "equiv" and dataset is None:
+    if args.stage in {"equiv", "overhead"} and dataset is None:
         parser.error("--dataset-dir is required for equivalence")
     if managed_run and args.equivalence_record is None:
         parser.error("--equivalence-record is required for pilot/full")
@@ -154,7 +154,13 @@ def main(argv=None):
         )
         print(json.dumps(reports, ensure_ascii=False, indent=2))
         return 0 if all(report["validation"]["passed"] for report in reports) else 1
-    if args.stage == "equiv":
+    if args.stage == "overhead":
+        from tokenmoe_collect.overhead import measure_overhead
+
+        result = measure_overhead(
+            model_config, dataset, output, port=args.port, startup_timeout=args.startup_timeout
+        )
+    elif args.stage == "equiv":
         from tokenmoe_collect.equivalence import equivalence
 
         result = equivalence(

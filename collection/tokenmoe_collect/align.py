@@ -1,6 +1,8 @@
 """Locate harness content in the engine's decoded prompt, without re-rendering it."""
 
 import bisect
+import hashlib
+import json
 
 from tokenizers.decoders import DecodeStream
 
@@ -47,10 +49,13 @@ def locate(text, value, cursor):
     return positions[0], positions[-1] + 1, mapping
 
 
-def align_prompt(tokenizer, token_ids, messages, provenance, request_id):
+def align_prompt(
+    tokenizer, token_ids, messages, provenance, request_id, *, template_omissions=None
+):
     text, token_starts = decode_with_offsets(tokenizer, token_ids)
     located, failed = [], []
     cursor = 0
+    template_omissions = template_omissions or {}
     for index, (message, source) in enumerate(zip(messages, provenance)):
         fields = []
         if message.get("reasoning"):
@@ -69,7 +74,25 @@ def align_prompt(tokenizer, token_ids, messages, provenance, request_id):
                 "available_at": source.get("available_at"),
                 "alignment_error": None,
             }
-            match = locate(text, value, cursor)
+            evidence = template_omissions.get((index, field)) if field == "reasoning" else None
+            if evidence:
+                prompt_hash = hashlib.sha256(
+                    json.dumps(list(token_ids), sort_keys=True, ensure_ascii=False).encode()
+                ).hexdigest()
+                messages_hash = hashlib.sha256(
+                    json.dumps(messages, sort_keys=True, ensure_ascii=False).encode()
+                ).hexdigest()
+                if not (
+                    evidence.get("full_render_matches_engine") is True
+                    and evidence.get("ablated_render_unchanged") is True
+                    and evidence.get("engine_prompt_ids_sha256") == prompt_hash
+                    and evidence.get("messages_sha256") == messages_hash
+                    and evidence.get("template_sha256")
+                    and evidence.get("tokenizer_sha256")
+                ):
+                    evidence = None
+            # Proven omissions must not match identical text elsewhere in the prompt.
+            match = None if evidence else locate(text, value, cursor)
             if match is None:
                 failed.append(
                     base
@@ -78,7 +101,13 @@ def align_prompt(tokenizer, token_ids, messages, provenance, request_id):
                         "char_end": None,
                         "token_start": None,
                         "token_end": None,
-                        "alignment_error": "message_not_found",
+                        "alignment_error": "template_omitted" if evidence else "message_not_found",
+                        "alignment_status": "template_omitted"
+                        if evidence
+                        else "unexpected_failure",
+                        "omission_evidence_json": json.dumps(evidence, sort_keys=True)
+                        if evidence
+                        else None,
                     }
                 )
                 continue
@@ -164,5 +193,12 @@ def align_prompt(tokenizer, token_ids, messages, provenance, request_id):
     return (
         text,
         segments,
-        {"message_fields": total, "located": total - len(failed), "failed": len(failed)},
+        {
+            "message_fields": total,
+            "located": total - len(failed),
+            "failed": len(failed),
+            "template_omitted": sum(
+                x.get("alignment_status") == "template_omitted" for x in failed
+            ),
+        },
     )

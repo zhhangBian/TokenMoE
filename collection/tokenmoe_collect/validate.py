@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
+from .admission import is_context_rejection
 from .jsonl import read_jsonl, write_json
 
 
@@ -39,6 +40,10 @@ def validate(run_dir):
     profiles = {
         row["model_profile_id"]: row for row in read_jsonl(root / "static/model_profiles.jsonl")
     }
+    experiments = list(read_jsonl(root / "static/experiment_configs.jsonl"))
+    local_admission_allowed = bool(experiments) and all(
+        x.get("collection_profile") == "local-qwen3-runtime-v1" for x in experiments
+    )
     seen = set()
     for name, field, prefix in [
         ("application_runs", "application_run_id", "run_"),
@@ -147,6 +152,25 @@ def validate(run_dir):
         if invalid or total != step["num_tokens_total"]:
             fail(8, sid)
     for rid, request in requests.items():
+        if request.get("engine_admission_status") == "rejected_before_engine":
+            if not (
+                local_admission_allowed
+                and is_context_rejection(
+                    request.get("http_status_code"), request.get("rejection_response")
+                )
+                and request.get("request_status") == "request_error"
+                and request.get("rejection_evidence_source")
+                in {"observed_http_response", "reproduced_rejection"}
+                and request.get("routing_ref") is None
+                and request.get("engine_received_at") is None
+                and request.get("first_scheduled_at") is None
+                and request.get("first_token_at") is None
+                and request.get("inference_finished_at") is None
+            ):
+                fail(6, rid)
+            if request_entries[rid]:
+                fail(7, rid)
+            continue
         try:
             if request.get("request_status") == "engine_record_missing" or not request.get(
                 "routing_ref"
@@ -192,6 +216,7 @@ def validate(run_dir):
                 )
                 valid &= bool(data["routing_complete"]) == request["routing_complete"]
                 valid &= bool(np.all(experts < profile["num_routed_experts"]))
+                valid &= bool(np.all(np.diff(np.sort(experts, axis=-1), axis=-1) > 0))
                 valid &= (
                     (bool(data["routing_complete"]) and end == total - 1)
                     if normal
@@ -227,10 +252,16 @@ def validate(run_dir):
     for segment in tables["prompt_segments"]:
         by_request[segment["llm_request_id"]].append(segment)
     for rid, request in requests.items():
+        if request.get("engine_admission_status") == "rejected_before_engine":
+            if request.get("prompt_ref") is not None or by_request[rid]:
+                fail(9, rid)
+            continue
         if not request.get("prompt_ref"):
             fail(9, rid)
             continue
-        text = (root / request["prompt_ref"]).read_text()
+        # Character offsets refer to the decoded prompt, including CRLF pairs.
+        with (root / request["prompt_ref"]).open(encoding="utf-8", newline="") as source:
+            text = source.read()
         valid, cursor = True, 0
         located = []
         for segment in by_request[rid]:
@@ -252,7 +283,7 @@ def validate(run_dir):
             or session["finished_at"] > run["run_finished_at"]
         ):
             fail(11, sid)
-    for experiment in read_jsonl(root / "static/experiment_configs.jsonl"):
+    for experiment in experiments:
         identifier = experiment["engine_config_id"]
         path = root / "static/equivalence" / f"{identifier}.json"
         if not path.exists():

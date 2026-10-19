@@ -14,7 +14,7 @@ def rate(value):
     return number
 
 
-def summarize(root, min_success_rate=0.9, min_location_rate=0.99):
+def summarize(root, min_success_rate=None, min_location_rate=0.99):
     root = Path(root).expanduser().resolve()
     if (root / "runtime").is_dir():
         directories = [root]
@@ -24,16 +24,26 @@ def summarize(root, min_success_rate=0.9, min_location_rate=0.99):
         directories = [root / Path(item["run_dir"]).name for item in manifest]
     reports = []
     for directory in directories:
+        config_path = directory / "run_config.json"
+        config = json.loads(config_path.read_text()) if config_path.exists() else {}
+        local = config.get("collection_profile") == "local-qwen3-runtime-v1"
+        threshold = min_success_rate if min_success_rate is not None else (0.0 if local else 0.9)
         sessions = json.loads((directory / "run_summary.json").read_text())["sessions"]
         validation = json.loads((directory / "validation.json").read_text())
         alignment = json.loads((directory / "alignment.json").read_text())
+        location_rate = (
+            alignment.get("rendered_location_rate", alignment["location_rate"])
+            if local
+            else alignment["location_rate"]
+        )
         counts = Counter(row["status"] for row in sessions)
         success_rate = counts["succeeded"] / len(sessions) if sessions else 0.0
         passed = (
             bool(sessions)
             and validation["passed"]
-            and success_rate >= min_success_rate
-            and alignment["location_rate"] >= min_location_rate
+            and success_rate >= threshold
+            and location_rate is not None
+            and location_rate >= min_location_rate
         )
         reports.append(
             {
@@ -42,6 +52,9 @@ def summarize(root, min_success_rate=0.9, min_location_rate=0.99):
                 "statuses": dict(counts),
                 "success_rate": success_rate,
                 "location_rate": alignment["location_rate"],
+                "rendered_location_rate": alignment.get("rendered_location_rate"),
+                "collection_profile": config.get("collection_profile"),
+                "min_success_rate": threshold,
                 "validation_passed": validation["passed"],
                 "automated_checks_passed": passed,
             }
@@ -63,7 +76,12 @@ def main(argv=None):
         required=True,
         help="A managed pilot/full directory or one finalized N directory; repeat for multiple models",
     )
-    parser.add_argument("--min-success-rate", type=rate, default=0.9)
+    parser.add_argument(
+        "--min-success-rate",
+        type=rate,
+        default=None,
+        help="Default: 0 for the local Qwen profile, 0.9 for other profiles",
+    )
     parser.add_argument("--min-location-rate", type=rate, default=0.99)
     parser.add_argument("--output", type=Path, help="Optional new JSON report file")
     args = parser.parse_args(argv)

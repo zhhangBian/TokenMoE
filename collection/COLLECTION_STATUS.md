@@ -92,3 +92,15 @@ SWE-bench 评分尚未执行，单独记录，不列入此次续采任务。每�
 3,600/7,200 秒和 600/1,200 秒对照均为待执行的诊断设计，本次未运行，也未修改正式配置。后续由执行 agent 依据进展自主选择和调整，每次只改变正在验证的时间参数。若延长后仍无进展，停止该对照并诊断、修复；若有实际进展，再依据吞吐和完成时间分布设置有上限的新预算并继续采集。预算变化写入新协议、配置和输出目录，完成对应的数据检查，原预算下的超时结果继续保留，不要求以题目解对或正常提交率提高作为调整依据。
 
 Dots 当前候选还有数值一致性阻塞。延长等待不能使不一致的 token 或路由通过等价性，须先完成相应修复验证。
+
+## Local Qwen collection completed — 2026-10-19
+
+Experiment: `/home/youwei/bzh/dataset/tokenmoe_artifacts/qwen3-runtime-20261019-063626`.
+
+All 40 primary planned units passed data validation: 20 Verified tasks at N1 and N4, with one model profile and one role version. The primary runs contain 685 attempted model calls (684 admitted and one evidenced context rejection), 1,021 tool calls, and 691,847 first-computed routing positions across 48 MoE layers. Rendered-field alignment is 100% in both runs; original rates are 97.5174% and 93.8178%, with all 249/524 proven template omissions retained. N4 session/request overlap peaks are both 4. Benchmark scores remain null and failed/limited trajectories remain in the dataset.
+
+The 200-request off/off/on/on equivalence protocol passed with zero output or routing disagreements. The four-round fixed greedy/max_tokens=64 overhead comparison measured 3.689% overhead (7.220440 seconds off versus 7.486773 seconds on; two repetitions per mode, ten measured requests each). All 70 harness tests pass. The hardware, installed environments, selected image digests and actual 2 CPU/4 GiB container limits were verified.
+
+CRLF validation, dropped optional Parquet evidence fields, and missing HTTP error-body capture were repaired. The one historical context rejection has separately disclosed exact-input replay evidence; its original response body remains marked unavailable. No original model outputs, raw tool bytes or routing arrays were changed or regenerated. Earlier derived reports and recovery provenance are retained.
+
+Read `reports/runtime_summary.md`, `reports/data_notes.md`, `reports/coverage.json`, `reports/storage.json`, and `reports/artifact_checksums.json` under the experiment root. Primary data directories are `collection/N1/attempt-01/N1/` and `collection/N4/attempt-01/N4/`. G1 groups are in `derived/labels_v1/g1_groups.json`; pilot and other diagnostics are separate. Health snapshots were recorded during execution, and all experiment-owned model services have completed.

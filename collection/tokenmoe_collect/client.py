@@ -95,6 +95,12 @@ class ChatClient:
                     usage=payload.get("usage"),
                 )
             except Exception as exc:
+                if isinstance(exc, httpx.HTTPStatusError):
+                    record["http_status_code"] = exc.response.status_code
+                    try:
+                        record["http_error_response"] = exc.response.json()
+                    except ValueError:
+                        record["http_error_response"] = {"text": exc.response.text}
                 retryable = isinstance(exc, httpx.TransportError) or (
                     isinstance(exc, httpx.HTTPStatusError)
                     and (exc.response.status_code == 429 or exc.response.status_code >= 500)

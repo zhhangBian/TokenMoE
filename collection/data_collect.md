@@ -15,6 +15,8 @@
 
 ## 1. 设计决策
 
+The local Qwen collection protocol is defined in §11. It preserves actual model/tool behavior and accepts complete failure traces independently of task correctness. The executing agent owns authorized local preparation, GPU execution, fault repair, and recovery.
+
 1. Router 不变。只记录 router 的真实选择，不训练或替换 router。
 2. prefix caching 开启。只保存本请求实际计算的路由，不重新暴露命中前缀的历史路由。`num_cached_tokens` 固定为首次调度的起始 token 位置；后续更长缓存命中造成的非连续区间用 token_positions 表示。抢占后重复计算标为 `recompute`，路由保留首次计算结果。
 3. decode 路由必采。采集使用真实生成，不使用 `max_tokens=1` 的 prompt-only 模式。最后一个采样 token 没有路由，属正常现象。
@@ -63,6 +65,8 @@ clock_sync:
 静态信息由实验启动器保存，运行时记录只引用其 ID。所有静态对象不可变、带版本或 hash。
 
 ### 3.1 Experiment Config
+
+Local experiments additionally record `collection_profile`, `protocol_id`, and `source_manifest_ref` when supplied. The source manifest records repository/fork commits and patch hashes, collector source-file hashes, model index/header and tokenizer hashes, dataset hashes, environment versions/import paths, actual GPU UUIDs/free memory, and disk capacity. Unknown dataset revisions remain `unknown` with content hashes retained.
 
 ```text
 experiment_config_id
@@ -125,6 +129,8 @@ difficulty                      可空
 
 ### 4.1 Application Run
 
+Local recovery links application, session, and request IDs through the experiment's append-only `recovery_events.jsonl`. A task rerun creates new IDs and a new directory; existing records remain unchanged. Coverage is keyed by benchmark item, concurrency, base seed, and protocol ID, independently of application task status.
+
 ```text
 application_run_id
 experiment_config_id
@@ -140,6 +146,10 @@ benchmark_score                 可空，任务完成后回填
 ```
 
 ### 4.2 Session
+
+Local `collection_manifest.json` records `pending`, `running`, `valid`, `needs_recollection`, or `blocked` for each planned unit, alongside session IDs, artifact paths, task outcomes, and invalidity reasons. A real failed/limited session can be valid data. A startup-only session without real inference cannot count as coverage.
+
+A context-budget rejection before engine admission can terminate a session while leaving earlier computed traces valid. Such sessions retain the actual failed outcome. A session must contain actual computed routing rows to count as coverage; prompt-token metadata alone does not establish execution.
 
 ```text
 session_id
@@ -158,6 +168,12 @@ final_status                    succeeded/failed/cancelled/timeout
 单循环 agent 的一次运行是一个 application run 加一个 session。子 agent 的 session 在 `spawn_agent` 工具调用发出时创建，其 `created_at` 就是该调用的 `started_at`。
 
 ### 4.3 LLM Request
+
+HTTP retries retain the existing step/attempt identity rules. Server restarts and task recollection allocate new application/session/request IDs; recovery events identify the previous execution, repair version, changed parameters, evidence, and verification result. Actual outgoing messages remain reconstructable from raw message deltas.
+
+HTTP error records preserve `http_status_code` and `http_error_response`. For the local profile, a structured HTTP 400 `BadRequestError` with `param` equal to `input_tokens` or `input_text` and an explicit maximum-context-length message can establish `engine_admission_status = rejected_before_engine` when there is no engine record or step entry. Keep the failed harness request and all raw messages; engine lifecycle/token/routing fields are null and no prompt/routing artifact is fabricated. Rules 6/7 validate the rejection evidence and absence of computation; rule 9 requires no invented engine prompt or segments. All ordinary missing engine records and all missing routing for admitted/computed requests still fail validation.
+
+Historical missing error bodies can be repaired with separately saved, exact-input rejection replays. The normalized record includes `rejection_response`, `rejection_evidence_source`, `original_response_body_available`, and replay IDs/references/hashes when applicable. Replay evidence must match the original messages/tools/sampling/seed and engine configuration, and neither original nor probe may appear in engine request records. Preserve prior derived reports and raw producer files. Explicitly mark replayed bodies as unavailable in the original capture; do not relabel them as observed original responses.
 
 ```text
 llm_request_id
@@ -195,6 +211,14 @@ assistant_response              完整的 content、reasoning、tool_calls
 `request_created_at` 与 `prev_tool_call_ids` 对应工具的 `finished_at` 之差是 harness 的组装开销；`request_sent_at` 之前的任何信息才允许作为该请求的预测特征。
 
 ### 4.4 Prompt Segment
+
+For the local Qwen profile, retain raw reasoning even when the effective chat template omits it. An omission requires exact reproduction of the actual engine prompt token IDs with the effective tokenizer/template and unchanged IDs after removing the candidate reasoning field. Preserve this evidence in `reports/template_evidence.json` and each omitted segment's `omission_evidence_json`; use `alignment_status = template_omitted`, null character/token ranges, and a non-null `alignment_error`. Missing tool payloads never qualify for omission exemptions. Unproven omissions remain unexpected failures.
+
+`alignment.json` retains the original `location_rate` and adds `template_omitted`, `unexpected_failures`, `rendered_denominator`, and `rendered_location_rate = located / (message_fields - template_omitted)`. A zero rendered denominator produces null with an explicit reason. Local acceptance uses rendered alignment ≥99% and discloses both rates and omission evidence; formal Hopper acceptance retains its existing metric.
+
+Prompt consumers must preserve original line endings when applying character ranges. CRLF occupies two characters. Read prompt text with universal-newline translation disabled; converting CRLF to LF invalidates otherwise correct offsets.
+
+Parquet export preserves the union of row fields. Optional `alignment_status` and `omission_evidence_json` columns remain available when they first occur after ordinary segments; missing values in other rows are null. Schema inference from the first row alone must not discard later evidence.
 
 每个请求的 prompt 由若干片段拼成，按渲染后的文本记录字符区间，并对齐到 token 区间：
 
@@ -326,6 +350,8 @@ llm_request_id, step_id         可空；由聚合预测触发的搬运不归属
 
 ## 5. 离线派生标签
 
+Local labels under `derived/labels_v1/` include command-derived tool categories (`test`, `inspect`, `edit`, `build_or_install`, `unknown`), observed outcomes (`success`, `failure`, `timeout`, `unknown`), and first-step/tool-switch markers. Files record `rules_version`, category/outcome availability timestamps, request IDs, and tool IDs. Final outcomes are supervision unavailable at tool issuance. These labels are recomputable descriptive annotations; they do not implement a predictor.
+
 派生标签存放在 `derived/labels_v<N>/`，每个版本附带生成规则。
 
 - **`tool_type`**：由 `tool_name` 与 `tool_args_ref` 归一化。首版分类：`test`（pytest、go test、cargo test、npm test 等）、`build`、`install`、`vcs`、`fs_read`、`fs_write`、`search`、`run_script`、`network`、`spawn_agent`、`other`。bash 类工具按命令行首个可执行程序与参数分类，管道取最重的一段。
@@ -335,6 +361,8 @@ llm_request_id, step_id         可空；由聚合预测触发的搬运不归属
 - **需求直方图**：按 `(agent_template_id, tool_type, outcome_class, phase, layer)` 聚合的 expert 使用计数，是内容预测器的物化视图，可随时从路由记录重算。
 
 ## 6. 存储布局
+
+Local experiment roots additionally contain `collection_plan.json`, `collection_manifest.json`, `source_manifest.json`, per-stage `source_snapshots/`, `recovery_events.jsonl`, `health_checks.jsonl`, `latest_health_check.json`, stage logs/configurations, and `reports/runtime_summary.{json,md}` plus `reports/artifact_checksums.json`. Smoke/equivalence/tool-smoke/pilot/primary/overhead stages use separate directories and append new attempts rather than overwrite failures. Independent finalized run directories retain the layout below. Checksums deduplicate hashing by inode and record excluded mutable control/health paths; storage reports distinguish file bytes from allocated bytes.
 
 ```text
 static/
@@ -402,6 +430,10 @@ finalize 保留 raw；路由、工具输出和原始工具参数文件硬链接�
 
 ### 7.1 实验验收
 
+The local Qwen exception is explicit: submission-rate threshold defaults to 0; task correctness, failed tests, model format errors, and exhausted budgets do not independently reject a complete trace. Applicable structural rules 1–9, 11, and 12 still apply, including the real 50-prompt capture-equivalence gate. Rules 10/13/14 remain `not_applicable`. Local rendered-field alignment must be ≥99%, with original rates and proven omission counts disclosed. Missing accepted-request routing or corrupted files require repair/recollection. Benchmark scores stay null.
+
+Local overhead is measured using fixed requests, identical serving parameters/devices, two capture-off and two capture-on repetitions, excluding server startup and two warmup requests per repetition. Each repetition measures ten prompts with max_tokens=64. Reports include wall time, token differences, hardware, scope, and repetitions. Values ≥5% trigger bounded investigation/optimization without independently invalidating local traces. The formal Hopper <5% requirement remains unchanged.
+
 正式采集前，pilot 的每个并发档须满足：
 
 | 项目 | 要求 | 依据 |
@@ -445,6 +477,8 @@ finalize 保留 raw；路由、工具输出和原始工具参数文件硬链接�
 
 ### 8.2 采集矩阵
 
+The local matrix is 3 Verified pilot tasks at N1 (10 steps/600 seconds each), followed by 20 fixed Verified tasks at N1 and N4 (20 steps/900 seconds each), yielding 40 primary planned units. Tool timeout is 60 seconds, HTTP timeout 600 seconds, retries 2, and containers use 2 CPU/4 GiB. Turn-boundary time checks are not hard deadlines. N4 is actual session concurrency, independent of TP; report measured overlap and batch composition. Pilot, smoke, and recovery duplicates do not increase primary coverage counts.
+
 ```text
 benchmark item x role template 集合 x model profile x seed x 并发配置
 ```
@@ -457,6 +491,8 @@ benchmark item x role template 集合 x model profile x seed x 并发配置
 
 ## 9. 模型
 
+Local profile `local-qwen3-runtime-v1` uses a separate Qwen configuration: BF16, TP=2, context=32768, max_num_seqs=4, max_num_batched_tokens=4096, gpu_memory_utilization=0.8, no YaRN override, and unchanged Qwen3 reasoning/Hermes tool parsing. Sampling uses temperature=0.6, top_p=0.95, top_k=20, max_tokens=4096, base_seed=42. Preserve the historical 131072/YaRN configuration. Parameter changes require a new configuration/protocol and matching equivalence evidence; select actual available devices before each launch.
+
 | 模型               | 专家配置                          | 备注                                                         |
 | ------------------ | --------------------------------- | ------------------------------------------------------------ |
 | Qwen3-30B-A3B | 48 个 MoE 层，128 选 8 | 本地调试；router 捕获 |
@@ -467,6 +503,16 @@ benchmark item x role template 集合 x model profile x seed x 并发配置
 模型 profile 的 MoE 层列表以实际 layer_map 为准。每个模型及新的并行配置均须通过规则 12 的等价性检查。当前采集阶段不测逐层延迟，layer_latency_profile_ref 为 null。服务配置见 configs/models/，执行步骤见操作指引。
 
 ## 10. G1、G2、G3 切分规则
+
+Local G1 manifests group by benchmark item, keeping all N1/N4, pilot, and recovery copies of a task together. The local dataset contains one generalist role with bash tools; G2/G3 and unseen-tool generalization are explicitly not covered. Runtime reports describe observed demand and timing without claiming expert-cache, offload-stall, or end-to-end acceleration benefits.
+
+## 11. Local Qwen execution and runtime reports
+
+`collection/scripts/run_local.py` runs or resumes the local profile using explicit generated model, pilot, and primary configurations. `--dry-run` expands the plan without GPU, download, image-pull, or collection writes; `--check-only` reads current health. The supervisor keeps a single-experiment lock and records a health snapshot every 1,800 seconds during active execution. Snapshots include the active process identity/create time, liveness, completed coverage, and request-log sizes/modification times. Stage errors preserve diagnostics and mark the experiment `needs_repair`; the executing agent diagnoses and repairs the issue before resuming missing units.
+
+Asset preparation reuses local weights and SWE-bench Verified data. Validate all indexed shards and safetensors data ranges, tokenizer/config files, benchmark readability and selected task IDs. Existing download scripts gain explicit Qwen selection and `--only-missing`; target only missing/damaged resources and use environment/credential authentication without recording secrets. Container pulls are restricted to selected tasks. Record actual image IDs/digests and kernel cgroup/boot-clock preflight evidence before benchmark execution.
+
+Per-run runtime reports include real task/exit/fault counts, request/attempt/tool/step/chunk counts, cached/output/prompt/first-computed/recompute tokens, per-layer new_prefill/decode lookup histograms, tool payload/consumer coverage, tool-output bytes and timing, queueing/first-token/generation intervals, actual concurrency, host-load/GPU telemetry coverage, alignment/validation, storage, and checksums. Missing endpoints or unobservable metrics use null with a reason. Routing demand excludes recomputation and cached gaps, uses actual token_positions, and does not fabricate a row for the final sampled token. Engine/request wall time does not establish per-layer kernel or directly observed per-token latency.
 
 - **G1**：训练与测试使用相同的角色模板与应用形态，测试集为新的 benchmark item；同一 item 的全部 session 与请求属于同一 split。
 - **G2**：测试应用的定义整体不进入训练集，但其角色模板均在训练集中出现过；不按运行结束后的最终图随机切分；优先使用相同角色集合、不同依赖关系的配对应用。

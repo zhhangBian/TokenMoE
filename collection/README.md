@@ -16,6 +16,7 @@
 | [prepare_configs.py](scripts/prepare_configs.py) | 将配置模板转换为本机配置 | 路径、`--runtime`、`--runtime-executable`、`--concurrency`、`--tp`、种子和运行限制 | `models/*.yaml`、`runs/*-{pilot,full}.yaml` |
 | [run_collection.py](scripts/run_collection.py) | 执行一个采集阶段，管理服务启停 | `--stage`、配置文件、`--fork-venv`、`--gpus`、`--port`、输出目录、启动超时 | 阶段日志和采集产物 |
 | [summarize_runs.py](scripts/summarize_runs.py) | 汇总校验、定位率和正常提交率 | `--run-dir`（可重复）、`--output` | JSON 汇总；自动检查失败时返回非零 |
+| [run_local.py](scripts/run_local.py) | Run/resume the local Qwen protocol with recovery and 30-minute health snapshots | `--experiment-dir`, model/pilot/primary configs, `--fork-venv`, `--gpus`, `--stages`, `--check-only`, `--dry-run` | Persistent plan/manifest, stage logs, real traces, runtime reports |
 
 前三个脚本支持 `--dry-run`，只打印计划。配置生成拒绝覆盖非空目录，采集阶段拒绝复用已有实验目录。`summarize_runs.py` 不执行人工验收项目，具体要求见[规范 §7.1](data_collect.md#71-实验验收)。
 
@@ -27,6 +28,7 @@
 |---|---|---|
 | `smoke` | `--model-config` | 启动服务，发送一条请求，检查捕获层、路由和引擎步，再停止服务 |
 | `equiv` | `--model-config`、`--dataset-dir` | 执行规范中的 capture 等价性协议，保存验证记录 |
+| `overhead` | `--model-config`, `--dataset-dir` | Measure capture-off/on request wall time with two repetitions per mode; local overhead is reported independently of data validity |
 | `pull-images` | `--config` | 拉取任务清单对应的容器镜像，不启动模型服务 |
 | `check-runtime` | `--config` | 用首个已缓存任务镜像检查容器启动、任务 cgroup 内核限额与同机 boot ID，不加载模型 |
 | `pilot` | `--config`、`--equivalence-record` | 按配置运行任务和并发档，自动收尾、finalize、validate |
@@ -77,3 +79,54 @@ DSW 主流程使用常驻 keeper 保留私有 user、mount、cgroup namespace，
 在已安装的 harness 环境中运行 `pytest collection/tests`。部分对齐和端到端测试使用本机 Qwen tokenizer，路径在 `tests/test_pipeline.py` 中。
 
 fork 的 CPU recorder 测试使用 fork venv，在 `vllm/` 目录执行 `python -m pytest --confcutdir=tests/tokenmoe tests/tokenmoe`。
+
+## Local Qwen runtime collection
+
+The `local-qwen3-runtime-v1` profile uses local Qwen3-30B-A3B weights and SWE-bench Verified. It runs a 3-task pilot followed by 20 fixed tasks at N1 and N4, producing 40 primary planned units. Real task failures and exhausted limits are retained when traces are valid; no SWE-bench scoring or submission-rate target is required. Capture equivalence and data integrity remain mandatory. See [the local protocol](data_collect.md#11-local-qwen-execution-and-runtime-reports).
+
+Prepare a new experiment with the existing harness environment:
+
+```bash
+QWEN_RUN_ROOT=/home/youwei/bzh/dataset/tokenmoe_artifacts/qwen3-runtime-new-run
+QWEN_PYTHON=/home/youwei/bzh/venvs/tokenmoe-harness/bin/python
+QWEN_FORK_VENV=/home/youwei/bzh/venvs/tokenmoe-vllm030
+QWEN_DATASET=/home/youwei/bzh/dataset/princeton-nlp/SWE-bench_Verified
+
+"$QWEN_PYTHON" collection/scripts/download_assets.py \
+  --models qwen3-30b-a3b --model-root /home/youwei/bzh/model \
+  --dataset-dir "$QWEN_DATASET" --only-missing
+
+"$QWEN_PYTHON" collection/scripts/prepare_configs.py \
+  --profile local-qwen3-runtime-v1 --model-root /home/youwei/bzh/model \
+  --dataset-dir "$QWEN_DATASET" --output-dir "$QWEN_RUN_ROOT/configs" \
+  --run-root "$QWEN_RUN_ROOT/runs"
+
+"$QWEN_PYTHON" collection/scripts/run_collection.py --stage pull-images \
+  --config "$QWEN_RUN_ROOT/configs/runs/qwen3-30b-a3b-full.yaml"
+
+"$QWEN_PYTHON" collection/scripts/run_local.py \
+  --experiment-dir "$QWEN_RUN_ROOT" \
+  --config "$QWEN_RUN_ROOT/configs/runs/qwen3-30b-a3b-full.yaml" \
+  --pilot-config "$QWEN_RUN_ROOT/configs/runs/qwen3-30b-a3b-pilot.yaml" \
+  --model-config "$QWEN_RUN_ROOT/configs/models/qwen3-30b-a3b.yaml" \
+  --fork-venv "$QWEN_FORK_VENV" --gpus 1,2 --port 18241
+```
+
+Recheck GPU availability before choosing `--gpus`. Both Qwen configuration generation and the supervisor support `--dry-run`. Configuration generation preserves the historical 131072/YaRN debug profile; local collection starts with context=32768 and records every effective configuration.
+
+The supervisor runs `smoke`, `equiv`, `tool-smoke`, `pilot`, `collect`, `overhead`, and `report` after preflight. `tool-smoke` executes the three existing local tool tasks separately from the single-request smoke. It records `health_checks.jsonl` and `latest_health_check.json` every 1,800 seconds while running. These are local health records; they do not create an app-scheduled chat notification. An immediate read requires no model server:
+
+```bash
+"$QWEN_PYTHON" collection/scripts/run_local.py \
+  --experiment-dir "$QWEN_RUN_ROOT" --check-only
+```
+
+After diagnosing and repairing a collection fault, repeat the supervisor command with the same configuration and an appropriate `--stages` list. It retains old attempts and skips validated primary units. Changed protocols require a new experiment directory. Each recovered unit links old/new executions in `recovery_events.jsonl`. Never rerun valid failures solely to increase submission rates.
+
+Reports include per-layer new-prefill/decode demand, real tool streams and consumption links, queueing/generation intervals, overlap, alignment, validation, storage, checksums, versioned labels, and task-level G1 groups. Proven template omissions retain raw reasoning and evidence; original and rendered-field alignment rates are both disclosed. G2/G3, offload speedups, and directly measured per-token/per-layer latency are outside this dataset's scope.
+
+Local context-budget rejections are retained with their actual failed task outcome. The client saves HTTP status and error bodies. A proven HTTP 400 context error rejected before engine admission has null engine timing/token fields and no fabricated prompt or routing artifact. Earlier real computation in that session remains usable; unknown missing engine records and missing routing for computed requests still fail validation. Historical captures missing an error body require separately disclosed exact-input replay evidence, verified by `tokenmoe_collect.admission.attach_replay_evidence`; prior derived reports and all raw records are preserved.
+
+### Completed local reference run
+
+The 2026-10-19 local run completed 40 validated primary sessions (20 tasks at N1/N4), with 685 attempted model calls, 1,021 tool calls and 691,847 first-computed routing positions. The fixed greedy/max_tokens=64 comparison measured 3.689% capture overhead. The report and data are under `/home/youwei/bzh/dataset/tokenmoe_artifacts/qwen3-runtime-20261019-063626/`; start with `reports/runtime_summary.md` and `reports/data_notes.md`. The latter documents the one historical rejection replay and all postprocessing repairs. `reports/coverage.json`, `reports/storage.json` and `reports/artifact_checksums.json` provide the delivery checks.

@@ -1,8 +1,69 @@
 ## MODIFIED Requirements
 
+### Requirement: Finalize into the storage layout
+`python -m tokenmoe_collect finalize <run_dir>` SHALL convert the harness and engine raw files into the §6 layout:
+- jsonl for application runs, sessions, requests and tool calls;
+- parquet for prompt segments, tool output chunks, engine steps and host load;
+- `tool_outputs/<tool_call_id>.out`;
+- `routing/<model_profile_id>/<llm_request_id>.npz`;
+- `prompts/<llm_request_id>.prompt.txt` and `prompts/<llm_request_id>.output.txt`: the decoded engine prompt and output tokens, special tokens kept.
+
+`prompt_ref` and `output_ref` SHALL point to these files. Segment character ranges SHALL index into the prompt file. Routing and tool output files SHALL be hardlinked from the raw files, and copied only when a hardlink is impossible.
+
+It SHALL join harness and engine records on `llm_request_id`. It SHALL fill:
+- `issued_at` from the issuing request's `inference_finished_at`;
+- `llm_request_ids_consuming` from `prev_tool_call_ids`;
+- the engine-side lifecycle fields of each request.
+
+It SHALL keep the raw files, and it SHALL run the validator at the end.
+
+For the local Qwen profile, an evidenced context-budget rejection before engine admission SHALL retain its failed harness request with `engine_admission_status = rejected_before_engine`, the HTTP status and rejection evidence, null engine lifecycle/token fields, and null prompt/output/routing references. No engine prompt or routing rows SHALL be fabricated. Actual error responses and exact-input replay evidence SHALL be distinguished explicitly; replay verification SHALL match model/messages/tools/sampling/seed and engine configuration and require no engine record for the original or probe. Unknown missing engine records SHALL retain the normal failure behavior.
+
+#### Scenario: Issued time filled
+- **WHEN** request `req_a` finishes at t=100 and its response contains tool call `tc_b`
+- **THEN** `tc_b.issued_at` equals 100 after finalize
+
+#### Scenario: Prompt text matches segments
+- **WHEN** a finalized request has a `tool_output` segment with character range `[a, b)`
+- **THEN** characters `[a, b)` of `prompts/<llm_request_id>.prompt.txt` contain that tool call's payload as passed to the agent
+
+#### Scenario: Large files stored once
+- **WHEN** finalize runs on a run directory that sits on one filesystem
+- **THEN** every routing and tool output file in the layout shares its inode with the corresponding raw file
+
+#### Scenario: Missing engine record
+- **WHEN** a harness request has no matching engine request record and no evidenced pre-engine context rejection
+- **THEN** finalize keeps the harness record, marks the request `engine_record_missing`, and validation reports it
+
+#### Scenario: Context rejection before engine admission
+- **WHEN** the API rejects a local request for its context budget before engine admission and verified rejection evidence exists
+- **THEN** finalize preserves the failed request and raw inputs with explicit rejection metadata and null engine artifacts, retaining earlier computed traces without inventing routing
+
+### Requirement: Validation
+`python -m tokenmoe_collect validate <run_dir>` SHALL check the rules of `collection/data_collect.md` §7 that apply to single-loop, single-host runs: rules 1–9, 11 and 12, with rules 6–9 in their revised form. Rules 6 and 7 SHALL join rows through `token_positions`, including holes from later cache hits. Aborted/error requests with `routing_complete = false` SHALL be checked against their actual computed positions; complete generations SHALL still require `row_end = T-1`. It SHALL report rules 10, 13 and 14 as `not_applicable`. It SHALL write `validation.json` with one entry per rule: status, violation count, and up to 20 example IDs. The exit code SHALL be non-zero if any applicable rule fails.
+
+
+For evidenced local pre-engine context rejections, rules 6 and 7 SHALL verify structured HTTP 400 context-error evidence, null engine lifecycle/routing fields, and the absence of engine-step entries. Rule 9 SHALL require no fabricated engine prompt or segments. These cases SHALL NOT mask missing routing for admitted/computed requests or unknown engine-record loss. Sessions without any actual computed routing SHALL NOT count as collected task coverage.
+
+#### Scenario: Routing shape violation
+- **WHEN** a contiguous routing file has fewer rows than its computed token_positions and matching step entries
+- **THEN** rule 6 fails and names that `llm_request_id`
+
+#### Scenario: Recompute allowed
+- **WHEN** a preempted request has recompute entries in addition to its new_prefill entries
+- **THEN** rule 7 passes, provided that every new_prefill and decode token appears exactly once
+
+#### Scenario: Missing equivalence record
+- **WHEN** no passing equivalence record exists for the run's `engine_config_id`
+- **THEN** rule 12 fails
+
+#### Scenario: Rejection metadata contradicts engine execution
+- **WHEN** a request marked rejected_before_engine has engine lifecycle timestamps, routing, or computed step entries
+- **THEN** validation fails the applicable integrity rule instead of accepting the rejection annotation
+
 ### Requirement: Prompt segments
 
-Finalize SHALL build the prompt segments of each request as follows:
+Finalize SHALL build the prompt segments of each engine-admitted request as follows:
 
 1. Decode the engine's prompt token IDs.
 2. Locate the harness messages in order inside the decoded text.
@@ -11,9 +72,13 @@ Finalize SHALL build the prompt segments of each request as follows:
 
 Each segment SHALL carry character and token ranges. A message that cannot be located SHALL produce a segment with null ranges and a non-null `alignment_error`. Located segments SHALL tile the prompt without overlap.
 
+Consumers SHALL preserve original line endings when reading prompt artifacts for character-range checks. A CRLF pair SHALL count as two characters in these ranges.
+
 For local Qwen collection, a field omitted by the actual chat template SHALL remain in the raw harness messages and SHALL have null prompt/token ranges, a non-null `alignment_error`, and an explicit `template_omitted` classification. This classification SHALL require reproducible evidence from the effective template/input and actual engine prompt token IDs. Missing fields without that evidence SHALL remain unexpected alignment failures. Tool payload loss SHALL NOT be classified as an allowed omission.
 
 The existing `location_rate` definition SHALL remain unchanged. Local `alignment.json` SHALL additionally report omitted-field counts, unexpected failures and `rendered_location_rate = located / (message_fields - template_omitted)` with its numerator and denominator; zero denominator SHALL be reported as null with a reason.
+
+Parquet export SHALL preserve optional `alignment_status` and `omission_evidence_json` fields even when they occur only in later rows. Rows without those fields SHALL use null values without dropping the columns or their evidence.
 
 #### Scenario: Tool output segment
 - **WHEN** a request contains the observation of tool call `tc_x`
@@ -23,6 +88,10 @@ The existing `location_rate` definition SHALL remain unchanged. Local `alignment
 - **WHEN** the chat template rewrote a message so that none of its text variants appear in the decoded prompt
 - **THEN** that message's segment has null ranges and a non-null `alignment_error`, and any unlocated actual prompt characters remain covered by an `other` segment
 
+#### Scenario: CRLF in a benchmark prompt
+- **WHEN** an engine prompt contains CRLF pairs and segment ranges tile the original decoded text
+- **THEN** validation reads those pairs unchanged and accepts the correctly covered prompt without shortening it through newline normalization
+
 #### Scenario: Proven omission of historical reasoning
 - **WHEN** a fixed-input reproduction and the actual engine token IDs show that the effective template omitted a historical reasoning field
 - **THEN** the field is classified as template_omitted with retained raw text and evidence, has no fabricated token range, and both original and rendered-field location rates are reported
@@ -30,6 +99,10 @@ The existing `location_rate` definition SHALL remain unchanged. Local `alignment
 #### Scenario: Unexplained missing tool payload
 - **WHEN** a tool observation cannot be found in the actual prompt and no supported rendering transformation explains it
 - **THEN** it remains an unexpected alignment failure, and cannot be removed from the local location-rate denominator as a template omission
+
+#### Scenario: Optional evidence appears after ordinary prompt rows
+- **WHEN** an initial ordinary segment has no omission metadata and a later segment contains proven template-omission evidence
+- **THEN** the exported Parquet table retains the later classification and evidence, enabling the same rendered-field alignment rate before and after serialization
 
 ## ADDED Requirements
 

@@ -10,7 +10,8 @@ import yaml
 
 from tokenmoe_collect.runtime import runtime_command
 
-MODEL_NAMES = ("gpt-oss-120b", "deepseek-v4-flash", "dots3-note")
+REMOTE_MODELS = ("gpt-oss-120b", "deepseek-v4-flash", "dots3-note")
+MODEL_NAMES = (*REMOTE_MODELS, "qwen3-30b-a3b")
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs"
 
 
@@ -36,7 +37,8 @@ def overrides(parser, settings, models, convert, option):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES))
+    parser.add_argument("--models", nargs="+", choices=MODEL_NAMES)
+    parser.add_argument("--profile", choices=["formal", "local-qwen3-runtime-v1"])
     parser.add_argument("--stages", nargs="+", choices=["pilot", "full"], default=["pilot", "full"])
     parser.add_argument("--model-root", type=Path, required=True)
     parser.add_argument("--dataset-dir", type=Path, required=True)
@@ -66,6 +68,14 @@ def main(argv=None):
     parser.add_argument("--memory-limit", help="Container memory limit, for example 4g")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.models is None:
+        args.models = (
+            ["qwen3-30b-a3b"] if args.profile == "local-qwen3-runtime-v1" else list(REMOTE_MODELS)
+        )
+    if args.profile == "local-qwen3-runtime-v1" and args.models != ["qwen3-30b-a3b"]:
+        parser.error("The local Qwen profile requires exactly --models qwen3-30b-a3b")
+    if args.profile == "formal" and "qwen3-30b-a3b" in args.models:
+        parser.error("Qwen uses the local profile, not the formal 500-task protocol")
     try:
         runtime_command(args.runtime, args.runtime_socket, args.runtime_executable)
     except ValueError as exc:
@@ -89,7 +99,9 @@ def main(argv=None):
         parser.error(f"Configuration output directory must be new or empty: {output}")
     generated = {}
     for model in dict.fromkeys(args.models):
-        profile = yaml.safe_load((CONFIG_ROOT / "models" / f"{model}.yaml").read_text())
+        local = model == "qwen3-30b-a3b"
+        template = f"{model}-local.yaml" if local else f"{model}.yaml"
+        profile = yaml.safe_load((CONFIG_ROOT / "models" / template).read_text())
         profile["model_path"] = model_paths.get(
             model, str((args.model_root.expanduser().resolve() / profile["model_id"]).resolve())
         )
@@ -101,7 +113,13 @@ def main(argv=None):
         generated[model_file] = profile
         for stage in dict.fromkeys(args.stages):
             cfg = copy.deepcopy(
-                yaml.safe_load((CONFIG_ROOT / "runs" / f"{stage}.yaml").read_text())
+                yaml.safe_load(
+                    (
+                        CONFIG_ROOT
+                        / "runs"
+                        / (f"local-qwen3-{stage}.yaml" if local else f"{stage}.yaml")
+                    ).read_text()
+                )
             )
             cfg.update(
                 model_config=str(model_file),
@@ -150,6 +168,9 @@ def main(argv=None):
                             "base_seed",
                             "step_limit",
                             "time_limit_seconds",
+                            "collection_profile",
+                            "instances",
+                            "sampling",
                         ]
                         if key in value
                     }
