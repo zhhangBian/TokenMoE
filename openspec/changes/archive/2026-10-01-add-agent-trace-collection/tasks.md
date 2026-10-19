@@ -37,7 +37,8 @@
   - npz shape and dtype
   - startup validation
   - API suppression
-- [ ] 2.10 [user] Push branch `tokenmoe-v0.30.0-trace` to origin. Then update the submodule pointer in the parent repo
+- [x] 2.10 [user] Push branch `tokenmoe-v0.30.0-trace` to origin. Then update the submodule pointer in the parent repo
+  - Verified against remote refs: fork branch points to `7665341a1eeb561a964531867341f01b22d1b09f`; parent `main` points to `003d3a93332b6d5c321079d083c517081837fc2b` and records that fork commit.
 
 ## 3. Harness package core (`collection/tokenmoe_collect`)
 
@@ -82,25 +83,15 @@
 ## 6. Local debug on A100 (Qwen3-30B-A3B)
 
 - [x] 6.1 [user] Create the fork venv and install the fork branch with `VLLM_USE_PRECOMPILED=1`, then run `pytest tests/tokenmoe` in the fork
-- [ ] 6.2 [user] Add `princeton-nlp/SWE-bench_Verified` to `DATASET_LIST` in `download_dataset.py` and run it. Pull the images for the local-debug instances with podman
 - [x] 6.3 [user] Run `scripts/smoke.sh qwen3-30b-a3b`. Check `layer_map.json` (48 router-path layers), one routed request, and the step records
-- [ ] 6.4 [user] Run `scripts/equivalence.sh qwen3-30b-a3b` (TP=2)
 - [x] 6.5 [user] Run 3 local instances, then finalize and validate. The user approved `configs/runs/smoke-local.yaml` (existing Python container, `tokenmoe/local-smoke`) when Docker Hub was unavailable; this does not count as SWE-bench validation. Report the outputs back for review
 
-## 7. Hopper pilot
+## Archive scope (2026-10-01)
 
-- [ ] 7.1 [user] Set up the fork and harness venvs on the Hopper host, download model weights, and pull the pilot images
-- [ ] 7.2 [user] Run smoke and equivalence for GPT-OSS-120B, DeepSeek-V4-Flash and dots3-note. Check the capture path of each model in `layer_map.json` (A3–A6, A10)
-- [ ] 7.3 [user] Run the pilot: 20 repo-stratified instances at N=1 and N=4 per model. Then finalize, validate and estimate
-- [ ] 7.4 Review the pilot against the acceptance criteria:
-  - all applicable rules pass, and the equivalence gate passes
-  - ≥ 90% of sessions end normally
-  - recorder overhead < 5%
-  - tee output matches what the agent received before truncation
-  - segment location ≥ 99%
-  - measured storage matches the estimate
-
-  Record the results and fix the full-run parameters in `configs/runs/full.yaml`
+The user removed tasks 6.2, 6.4 and 7.1–7.4 from this local implementation
+change. Formal experiments and acceptance checks remain in the collection
+specification and handoff guide for execution on the collection host. Removing
+these tasks does not claim that those experiments ran or passed.
 
 ## Implementation checkpoint (2026-09-30)
 
@@ -110,13 +101,13 @@
 - Q8/Q9 approved: partial routing metadata and absolute `token_positions`.
 - Approved and implemented: installed timeout/interpreter behavior, multi-span provenance,
   and a list of consuming request IDs covering retries.
-- `executor.py` and `estimate.py` have tested initial implementations; their tasks
-  remain unchecked until adapter/CLI integration is complete.
+- `executor.py` and `estimate.py` are integrated with the adapter and CLI;
+  their implementation tasks are complete.
 - Local fork installed (torch 2.13/cu130); 14 fork tests pass in the new venv.
   SWE-bench Verified downloaded. Docker Hub image pull failed; the user approved
   three tasks in the existing Python container as tokenmoe/local-smoke.
   Real Qwen TP=2 request smoke passed: 48 router layers, valid uint8 top-8 IDs.
-  Full equivalence, SWE-bench sessions, Hopper pilot and remote push remain unrun.
+  Full equivalence, SWE-bench sessions and Hopper pilot remain unrun.
 
 ### Local smoke outcome (2026-09-30)
 
@@ -132,6 +123,6 @@
 ### Local commits and handoff scripts (2026-09-30)
 
 - vLLM fork commit: `7665341a1eeb561a964531867341f01b22d1b09f` on `tokenmoe-v0.30.0-trace`; the parent submodule pointer records this commit.
-- Added parameterized download, config generation, managed stage execution, and acceptance-summary Python scripts; the handoff guide starts from cloning a published revision.
+- Added parameterized download, config generation, managed stage execution, and acceptance-summary Python scripts; the handoff guide starts from recursively cloning the repositories.
 - Validation: 30 harness tests and 14 fork tests passed; Ruff, local fork policy checks, OpenSpec strict validation and diff checks passed.
-- Git hooks were skipped for the commits at the user's explicit instruction. Remote push remains pending (task 2.10).
+- Git hooks were skipped for the commits at the user's explicit instruction. Remote refs now contain the fork and parent commits (task 2.10 verified complete).
