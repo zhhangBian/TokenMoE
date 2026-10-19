@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from tokenmoe_collect.runtime import runtime_command
+
 MODEL_NAMES = ("gpt-oss-120b", "deepseek-v4-flash", "dots3-note")
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs"
 
@@ -45,6 +47,9 @@ def main(argv=None):
         "--run-root", type=Path, required=True, help="Parent for <model>-<stage> outputs"
     )
     parser.add_argument("--runtime", choices=["podman", "docker"], default="podman")
+    parser.add_argument(
+        "--runtime-socket", help="Host Docker Unix socket path visible inside the collector"
+    )
     parser.add_argument("--model-path", action="append", default=[], metavar="MODEL=PATH")
     parser.add_argument("--tp", action="append", default=[], metavar="MODEL=COUNT")
     parser.add_argument("--max-model-len", type=positive)
@@ -58,6 +63,10 @@ def main(argv=None):
     parser.add_argument("--memory-limit", help="Container memory limit, for example 4g")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        runtime_command(args.runtime, args.runtime_socket)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.cpu_quota is not None and args.cpu_quota <= 0:
         parser.error("--cpu-quota must be positive")
     if args.concurrency and len(set(args.concurrency)) != len(args.concurrency):
@@ -111,6 +120,7 @@ def main(argv=None):
                 "request_timeout",
                 "cpu_quota",
                 "memory_limit",
+                "runtime_socket",
             ]:
                 value = getattr(args, key)
                 if value is not None:
@@ -130,6 +140,7 @@ def main(argv=None):
                             "dataset_path",
                             "output_dir",
                             "runtime",
+                            "runtime_socket",
                             "concurrency_matrix",
                             "base_seed",
                             "step_limit",

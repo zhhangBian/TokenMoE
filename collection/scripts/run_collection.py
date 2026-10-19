@@ -29,10 +29,14 @@ def gate_path(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--stage", choices=["smoke", "equiv", "pull-images", "pilot", "full"], required=True
+        "--stage",
+        choices=["smoke", "equiv", "check-runtime", "pull-images", "pilot", "full"],
+        required=True,
     )
     parser.add_argument("--model-config", type=Path, help="Required for smoke/equiv")
-    parser.add_argument("--config", type=Path, help="Run config for pull-images/pilot/full")
+    parser.add_argument(
+        "--config", type=Path, help="Run config for check-runtime/pull-images/pilot/full"
+    )
     parser.add_argument("--dataset-dir", type=Path, help="Required for equivalence")
     parser.add_argument(
         "--output-dir",
@@ -63,7 +67,7 @@ def main(argv=None):
     if args.startup_timeout <= 0:
         parser.error("--startup-timeout must be positive")
     managed_run = args.stage in {"pilot", "full"}
-    needs_run_config = managed_run or args.stage == "pull-images"
+    needs_run_config = managed_run or args.stage in {"pull-images", "check-runtime"}
     config = None
     if needs_run_config:
         if args.model_config is not None or args.dataset_dir is not None:
@@ -77,7 +81,7 @@ def main(argv=None):
         output = (args.output_dir or Path(config["output_dir"])).expanduser().resolve()
     else:
         if args.config is not None:
-            parser.error("--config is only used for pull-images/pilot/full")
+            parser.error("--config is only used for check-runtime/pull-images/pilot/full")
         if args.model_config is None or args.output_dir is None:
             parser.error("--model-config and --output-dir are required for smoke/equiv")
         model_config = args.model_config.expanduser().resolve()
@@ -88,7 +92,7 @@ def main(argv=None):
     if managed_run and args.equivalence_record is None:
         parser.error("--equivalence-record is required for pilot/full")
     model = load_yaml(model_config)
-    if args.stage != "pull-images":
+    if args.stage not in {"pull-images", "check-runtime"}:
         if not args.gpus or args.fork_venv is None:
             parser.error("--gpus and --fork-venv are required for GPU stages")
         devices = [part.strip() for part in args.gpus.split(",")]
@@ -121,10 +125,16 @@ def main(argv=None):
         plan.update(
             instances=len(config["instances"]),
             runtime=config["runtime"],
+            runtime_socket=config.get("runtime_socket"),
             concurrency=config.get("concurrency_matrix", [config["num_concurrent_sessions"]]),
         )
     print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
     if args.dry_run:
+        return 0
+    if args.stage == "check-runtime":
+        from tokenmoe_collect.runtime import check_runtime
+
+        print(json.dumps(check_runtime(args.config), ensure_ascii=False, indent=2))
         return 0
     if args.stage == "pull-images":
         from tokenmoe_collect.serving import pull_images

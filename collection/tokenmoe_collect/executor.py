@@ -8,6 +8,7 @@ import threading
 import time
 
 from .clock import now
+from .runtime import runtime_command
 
 
 class StreamingExecutor:
@@ -19,9 +20,11 @@ class StreamingExecutor:
         cwd="/testbed",
         environment=None,
         interpreter=None,
+        runtime_socket=None,
     ):
         self.store = store
         self.runtime = runtime
+        self.runtime_argv = runtime_command(runtime, runtime_socket)
         self.container_id = container_id
         self.cwd = cwd
         self.environment = environment or {}
@@ -41,7 +44,7 @@ class StreamingExecutor:
             raise ValueError(f"Unsupported container runtime: {self.runtime}")
         if not self.container_id:
             raise ValueError("No session container")
-        argv = [self.runtime, "exec", "-w", cwd or self.cwd]
+        argv = [*self.runtime_argv, "exec", "-w", cwd or self.cwd]
         for key, value in self.environment.items():
             argv.extend(["-e", f"{key}={value}"])
         return [*argv, self.container_id, *self.interpreter, command]

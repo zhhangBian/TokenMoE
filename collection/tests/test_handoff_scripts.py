@@ -36,6 +36,8 @@ def prepared(tmp_path):
             str(tmp_path / "runs"),
             "--runtime",
             "docker",
+            "--runtime-socket",
+            "/var/run/docker.sock",
             "--concurrency",
             "2",
             "3",
@@ -63,6 +65,7 @@ def test_generated_configs_preserve_workloads_and_resolve_machine_parameters(pre
         assert Path(cfg["model_config"]).is_file()
         assert cfg["dataset_path"] == str(tmp_path / "benchmark")
         assert cfg["runtime"] == "docker" and cfg["concurrency_matrix"] == [2, 3]
+        assert cfg["runtime_socket"] == "/var/run/docker.sock"
         assert cfg["num_concurrent_sessions"] == 2 and cfg["base_seed"] == 17
         assert cfg["step_limit"] == 42 and cfg["time_limit_seconds"] == 300
         assert len(cfg["instances"]) == (500 if path.stem.endswith("-full") else 20)
@@ -256,3 +259,15 @@ def test_image_pull_resolves_dataset_relative_to_its_config(tmp_path, monkeypatc
         "pull",
         "docker.io/swebench/sweb.eval.x86_64.test_1776_repo-1:latest",
     ]
+
+
+def test_runtime_check_stage_needs_no_gpus_or_equivalence(prepared, monkeypatch):
+    from tokenmoe_collect import runtime
+
+    check = Mock(return_value={"passed": True})
+    monkeypatch.setattr(runtime, "check_runtime", check)
+    args = ["--stage", "check-runtime", "--config", str(prepared / "runs/gpt-oss-120b-pilot.yaml")]
+    assert script("run_collection").main([*args, "--dry-run"]) == 0
+    check.assert_not_called()
+    assert script("run_collection").main(args) == 0
+    check.assert_called_once_with(prepared / "runs/gpt-oss-120b-pilot.yaml")

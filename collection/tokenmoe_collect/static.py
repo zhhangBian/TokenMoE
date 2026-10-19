@@ -186,6 +186,7 @@ def write_static(run_dir, run_config, model_config, engine_dir, items, mini_conf
             "name": "mini-swe-agent",
             "version": "2.4.6",
             "sandbox_type": run_config["runtime"],
+            "runtime_socket": run_config.get("runtime_socket"),
             "cpu_quota": run_config.get("cpu_quota"),
             "memory_limit": run_config.get("memory_limit"),
         },

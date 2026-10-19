@@ -12,7 +12,7 @@
 | 脚本 | 用途 | 主要参数 | 输出 |
 |---|---|---|---|
 | [download_assets.py](scripts/download_assets.py) | 下载模型权重和 benchmark | `--models`、`--model-root`、`--dataset-dir`；可固定 revision、指定 endpoint、跳过已有资源 | 权重目录、数据集目录 |
-| [prepare_configs.py](scripts/prepare_configs.py) | 将配置模板转换为本机配置 | 路径、`--runtime`、`--concurrency`、`--tp`、种子和运行限制 | `models/*.yaml`、`runs/*-{pilot,full}.yaml` |
+| [prepare_configs.py](scripts/prepare_configs.py) | 将配置模板转换为本机配置 | 路径、`--runtime`、`--runtime-socket`、`--concurrency`、`--tp`、种子和运行限制 | `models/*.yaml`、`runs/*-{pilot,full}.yaml` |
 | [run_collection.py](scripts/run_collection.py) | 执行一个采集阶段，管理服务启停 | `--stage`、配置文件、`--fork-venv`、`--gpus`、`--port`、输出目录、启动超时 | 阶段日志和采集产物 |
 | [summarize_runs.py](scripts/summarize_runs.py) | 汇总校验、定位率和正常提交率 | `--run-dir`（可重复）、`--output` | JSON 汇总；自动检查失败时返回非零 |
 
@@ -25,10 +25,13 @@
 | `smoke` | `--model-config` | 启动服务，发送一条请求，检查捕获层、路由和引擎步，再停止服务 |
 | `equiv` | `--model-config`、`--dataset-dir` | 执行规范中的 capture 等价性协议，保存验证记录 |
 | `pull-images` | `--config` | 拉取任务清单对应的容器镜像，不启动模型服务 |
+| `check-runtime` | `--config` | 用首个已缓存任务镜像检查容器启动、配置的资源限制参数与同机 boot ID，不加载模型 |
 | `pilot` | `--config`、`--equivalence-record` | 按配置运行任务和并发档，自动收尾、finalize、validate |
 | `full` | `--config`、`--equivalence-record` | 与 pilot 使用同一执行流程，任务规模由传入配置决定 |
 
 `--stage full` 不会自动把任务清单扩展为 500 条；需要传入生成的 `*-full.yaml`。pilot/full 的服务参数必须与等价性记录匹配。
+
+采集进程位于 Docker 中时，可用 `--runtime docker --runtime-socket /var/run/docker.sock` 连接同一宿主机的 daemon，创建与采集容器并列的任务容器。socket 需预先挂载且对采集用户可访问，配置会统一用于 pull/run/exec/rm。宿主机入口和启动示例见 [HANDOFF.md](HANDOFF.md#采集脚本位于-docker-容器内时)。pilot/full 在模型启动前自动检查运行时；失败会提前退出。此方式保留每任务容器的 CPU、内存限制和原始输出采集。
 
 ## 配置文件
 
@@ -52,6 +55,7 @@
 | `run` | 连接已经启动的服务，执行一次 agent 任务清单 |
 | `pilot` | 自动管理服务和并发档，完成采集、整理、校验 |
 | `pull-images` | 下载运行配置指定的实例镜像 |
+| `check-runtime` | 检查实际任务容器启动和同机条件 |
 | `finalize` | 关联 raw 记录，生成规范规定的存储布局并运行校验 |
 | `validate` | 对已整理的数据重新运行校验 |
 | `profile` | 查看运行目录内的模型 profile |

@@ -7,7 +7,7 @@ import json
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="tokenmoe-collect")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ["run", "pull-images"]:
+    for name in ["run", "pull-images", "check-runtime"]:
         commands.add_parser(name).add_argument("--config", required=True)
     for name in ["finalize", "validate"]:
         commands.add_parser(name).add_argument("run_dir")
@@ -35,6 +35,11 @@ def main(argv=None):
     pilot_parser.add_argument("--port", type=int, default=8000)
     commands.add_parser("profile").add_argument("run_dir")
     args = parser.parse_args(argv)
+    if args.command == "check-runtime":
+        from .runtime import check_runtime
+
+        print(json.dumps(check_runtime(args.config), indent=2))
+        return 0
     if args.command == "profile":
         from pathlib import Path
 

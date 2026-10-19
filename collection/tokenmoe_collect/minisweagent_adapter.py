@@ -21,6 +21,7 @@ from minisweagent.models.utils.actions_toolcall import (
 from .clock import now
 from .executor import StreamingExecutor
 from .ids import new_id
+from .runtime import runtime_command
 
 
 def payload_ranges(template, output, template_vars, expected):
@@ -171,10 +172,20 @@ class TracedModel:
 
 
 class TracedEnvironment(DockerEnvironment):
-    def __init__(self, *, store, session_id, runtime="podman", create_workdir=False, **kwargs):
+    def __init__(
+        self,
+        *,
+        store,
+        session_id,
+        runtime="podman",
+        runtime_socket=None,
+        create_workdir=False,
+        **kwargs,
+    ):
         self.store = store
         self.session_id = session_id
         self.runtime = runtime
+        self.runtime_argv = runtime_command(runtime, runtime_socket)
         self.create_workdir = create_workdir
         self.pending = {}
         self.started_at = now()
@@ -193,12 +204,13 @@ class TracedEnvironment(DockerEnvironment):
             self.config.cwd,
             forwarded | self.config.env,
             self.config.interpreter,
+            runtime_socket=runtime_socket,
         )
 
     def _start_container(self):
         self.container_id = "tokenmoe-" + new_id("ses")
         command = [
-            self.runtime,
+            *self.runtime_argv,
             "run",
             "-d",
             "--name",
@@ -220,14 +232,27 @@ class TracedEnvironment(DockerEnvironment):
             )
             if self.create_workdir:
                 subprocess.run(
-                    [self.runtime, "exec", self.container_id, "mkdir", "-p", "--", self.config.cwd],
+                    [
+                        *self.runtime_argv,
+                        "exec",
+                        self.container_id,
+                        "mkdir",
+                        "-p",
+                        "--",
+                        self.config.cwd,
+                    ],
                     check=True,
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
         except BaseException as exc:
-            self.cleanup()
+            try:
+                self.cleanup()
+            except Exception:
+                self.logger.exception(
+                    "Failed to clean up the session container after setup failure"
+                )
             if isinstance(exc, subprocess.CalledProcessError):
                 raise RuntimeError(f"Container setup failed: {exc.stderr}") from exc
             raise
@@ -275,7 +300,7 @@ class TracedEnvironment(DockerEnvironment):
         container_id = getattr(self, "container_id", None)
         if container_id is not None and self.runtime != "local":
             subprocess.run(
-                [self.runtime, "rm", "-f", container_id],
+                [*self.runtime_argv, "rm", "-f", container_id],
                 check=True,
                 capture_output=True,
                 text=True,

@@ -6,6 +6,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .runtime import check_runtime, runtime_command
 from .static import load_yaml
 
 
@@ -62,9 +63,10 @@ def pull_images(run_config):
     config = load_yaml(config_path)
     if config["runtime"] not in {"docker", "podman"}:
         raise ValueError("Image pulls require docker or podman")
+    prefix = runtime_command(config["runtime"], config.get("runtime_socket"))
     dataset_path = (config_path.parent / Path(config["dataset_path"]).expanduser()).resolve()
     for item in load_benchmark(dataset_path, config["instances"]):
-        args = [config["runtime"], "pull", image_name(item)]
+        args = [*prefix, "pull", image_name(item)]
         print(shlex.join(args), flush=True)
         subprocess.run(args, check=True)
 
@@ -87,7 +89,9 @@ def pilot(run_config, *, equivalence_record, port=8000, output_dir=None, startup
     gate = json.loads(Path(equivalence_record).read_text())
     if not gate.get("passed") or gate.get("num_prompts") != 50:
         raise ValueError("Pilot requires a passing 50-prompt equivalence record")
+    runtime_check = check_runtime(config_path)
     base.mkdir(parents=True)
+    write_json(base / "runtime_preflight.json", runtime_check)
     reports = []
     for concurrency in config.get("concurrency_matrix", [config["num_concurrent_sessions"]]):
         trace = base / f"engine-N{concurrency}"

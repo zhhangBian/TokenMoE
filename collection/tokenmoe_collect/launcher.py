@@ -12,6 +12,7 @@ from .hostload import HostSampler
 from .ids import new_id, sampling_seed
 from .jsonl import write_json
 from .records import RecordStore
+from .runtime import check_runtime, container_run_args
 from .static import load_benchmark, load_yaml, minisweagent_config, write_static
 
 
@@ -60,7 +61,9 @@ def run(config_path, *, sampler_source=None):
         cost_limit=0,
     )
     mini["model"].update(model_name=model["name"], model_kwargs={})
+    runtime_check = check_runtime(path)
     root.mkdir(parents=True, exist_ok=False)
+    write_json(root / "runtime_preflight.json", runtime_check)
     write_json(root / "run_config.json", config)
     write_json(root / "model_config.json", model)
     write_json(
@@ -100,18 +103,12 @@ def run(config_path, *, sampler_source=None):
                 if config["runtime"] == "local":
                     environment.update(cwd=config.get("local_cwd", str(root)), env={}, run_args=[])
                 else:
-                    args = ["--rm", "--pull=never"]
-                    if config.get("container_network"):
-                        args += ["--network", config["container_network"]]
-                    if config.get("cpu_quota"):
-                        args += ["--cpus", str(config["cpu_quota"])]
-                    if config.get("memory_limit"):
-                        args += ["--memory", str(config["memory_limit"])]
-                    environment["run_args"] = args
+                    environment["run_args"] = container_run_args(config)
                 env = TracedEnvironment(
                     store=store,
                     session_id=session_id,
                     runtime=config["runtime"],
+                    runtime_socket=config.get("runtime_socket"),
                     create_workdir=config.get("create_workdir", False),
                     **environment,
                 )
