@@ -126,6 +126,7 @@ def main(argv=None):
             instances=len(config["instances"]),
             runtime=config["runtime"],
             runtime_socket=config.get("runtime_socket"),
+            runtime_executable=config.get("runtime_executable"),
             concurrency=config.get("concurrency_matrix", [config["num_concurrent_sessions"]]),
         )
     print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)

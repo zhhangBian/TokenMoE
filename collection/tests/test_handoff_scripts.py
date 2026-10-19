@@ -256,6 +256,7 @@ def test_image_pull_resolves_dataset_relative_to_its_config(tmp_path, monkeypatc
     benchmark.assert_called_once_with(tmp_path / "dataset", ["test__repo-1"])
     assert execute.call_args.args[0] == [
         "podman",
+        "--remote=false",
         "pull",
         "docker.io/swebench/sweb.eval.x86_64.test_1776_repo-1:latest",
     ]
@@ -271,3 +272,31 @@ def test_runtime_check_stage_needs_no_gpus_or_equivalence(prepared, monkeypatch)
     check.assert_not_called()
     assert script("run_collection").main(args) == 0
     check.assert_called_once_with(prepared / "runs/gpt-oss-120b-pilot.yaml")
+
+
+def test_prepare_defaults_to_local_podman_and_preserves_private_entry(tmp_path):
+    output = tmp_path / "configs"
+    assert (
+        script("prepare_configs").main(
+            [
+                "--models",
+                "gpt-oss-120b",
+                "--model-root",
+                str(tmp_path / "models"),
+                "--dataset-dir",
+                str(tmp_path / "dataset"),
+                "--output-dir",
+                str(output),
+                "--run-root",
+                str(tmp_path / "runs"),
+                "--runtime-executable",
+                "/task/runtime/bin/podman",
+            ]
+        )
+        == 0
+    )
+    for path in (output / "runs").glob("*.yaml"):
+        config = yaml.safe_load(path.read_text())
+        assert config["runtime"] == "podman"
+        assert config["runtime_executable"] == "/task/runtime/bin/podman"
+        assert "runtime_socket" not in config

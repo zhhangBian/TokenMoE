@@ -109,6 +109,7 @@ def run(config_path, *, sampler_source=None):
                     session_id=session_id,
                     runtime=config["runtime"],
                     runtime_socket=config.get("runtime_socket"),
+                    runtime_executable=config.get("runtime_executable"),
                     create_workdir=config.get("create_workdir", False),
                     **environment,
                 )

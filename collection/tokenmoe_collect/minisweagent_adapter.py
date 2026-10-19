@@ -179,13 +179,14 @@ class TracedEnvironment(DockerEnvironment):
         session_id,
         runtime="podman",
         runtime_socket=None,
+        runtime_executable=None,
         create_workdir=False,
         **kwargs,
     ):
         self.store = store
         self.session_id = session_id
         self.runtime = runtime
-        self.runtime_argv = runtime_command(runtime, runtime_socket)
+        self.runtime_argv = runtime_command(runtime, runtime_socket, runtime_executable)
         self.create_workdir = create_workdir
         self.pending = {}
         self.started_at = now()
@@ -205,6 +206,7 @@ class TracedEnvironment(DockerEnvironment):
             forwarded | self.config.env,
             self.config.interpreter,
             runtime_socket=runtime_socket,
+            runtime_executable=runtime_executable,
         )
 
     def _start_container(self):

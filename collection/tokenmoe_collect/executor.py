@@ -21,10 +21,11 @@ class StreamingExecutor:
         environment=None,
         interpreter=None,
         runtime_socket=None,
+        runtime_executable=None,
     ):
         self.store = store
         self.runtime = runtime
-        self.runtime_argv = runtime_command(runtime, runtime_socket)
+        self.runtime_argv = runtime_command(runtime, runtime_socket, runtime_executable)
         self.container_id = container_id
         self.cwd = cwd
         self.environment = environment or {}

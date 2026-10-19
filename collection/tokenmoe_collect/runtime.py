@@ -1,5 +1,8 @@
 """Container transport and a real task-image startup check before GPU work."""
 
+import json
+import math
+import re
 import subprocess
 from pathlib import Path
 
@@ -7,16 +10,49 @@ from .ids import new_id
 from .static import load_benchmark, load_yaml
 
 
-def runtime_command(runtime, runtime_socket=None):
+def runtime_command(runtime, runtime_socket=None, runtime_executable=None):
     if runtime not in {"docker", "podman", "local"}:
         raise ValueError(f"Unsupported container runtime: {runtime}")
+    if runtime_executable is not None and (
+        runtime == "local"
+        or not isinstance(runtime_executable, str)
+        or not Path(runtime_executable).is_absolute()
+    ):
+        raise ValueError("runtime_executable must be an absolute Docker or Podman executable path")
+    executable = runtime_executable or runtime
     if runtime_socket is None:
-        return [runtime]
+        # A platform-local Podman must not inherit a remote connection from
+        # CONTAINER_HOST or the user's saved service settings.
+        return [executable, "--remote=false"] if runtime == "podman" else [executable]
     if runtime != "docker":
         raise ValueError("runtime_socket requires runtime: docker")
     if not isinstance(runtime_socket, str) or not Path(runtime_socket).is_absolute():
         raise ValueError("runtime_socket must be an absolute Unix socket path")
-    return ["docker", "--host", f"unix://{runtime_socket}"]
+    return [executable, "--host", f"unix://{runtime_socket}"]
+
+
+def validate_limits(config, probe):
+    quota, period = probe.get("cpu_quota_us"), probe.get("cpu_period_us")
+    if config.get("cpu_quota") and (
+        quota is None
+        or quota <= 0
+        or not period
+        or not math.isclose(quota / period, float(config["cpu_quota"]), rel_tol=1e-5)
+    ):
+        raise ValueError(
+            "Task cgroup CPU quota does not match cpu_quota; resource limits are required"
+        )
+    if config.get("memory_limit"):
+        match = re.fullmatch(
+            r"(\d+(?:\.\d+)?)\s*([bkmgtep]?)(?:i?b)?", str(config["memory_limit"]).lower()
+        )
+        if not match:
+            raise ValueError("Unsupported memory_limit; use bytes or a size such as 4g")
+        expected = int(float(match[1]) * 1024 ** "bkmgtep".index(match[2] or "b"))
+        if probe.get("memory_limit_bytes") != expected:
+            raise ValueError(
+                "Task cgroup memory limit does not match memory_limit; resource limits are required"
+            )
 
 
 def container_run_args(config):
@@ -34,22 +70,25 @@ def container_run_args(config):
 def check_runtime(run_config):
     """Start the first cached benchmark image with the configured resource limits.
 
-    A host Docker socket creates sibling task containers. No harness paths or
-    daemon sockets are mounted into those containers; tool I/O uses exec pipes.
+    Native Podman runs inside the current platform container. Docker sockets
+    remain an optional transport when a caller explicitly provides one.
     """
     from .launcher import image_name
 
     path = Path(run_config).expanduser().resolve()
     config = load_yaml(path)
     runtime = config["runtime"]
-    prefix = runtime_command(runtime, config.get("runtime_socket"))
+    prefix = runtime_command(
+        runtime, config.get("runtime_socket"), config.get("runtime_executable")
+    )
     if runtime == "local":
         return {"passed": True, "runtime": runtime, "scope": "CPU tests only"}
     hint = (
-        "When the collector runs in Docker, mount the same Linux host's Docker "
-        "socket into the collector and set runtime: docker and "
-        "runtime_socket: /var/run/docker.sock. The socket must be accessible to "
-        "the collector user. Pull the benchmark images before this check."
+        "For a platform container without host Docker access, use local Podman "
+        "(runtime: podman). A tested private Podman entry point can be selected "
+        "with runtime_executable. Check the platform's permitted user/mount/cgroup "
+        "namespaces, UID/GID mappings and delegated cgroup permissions; keep CPU "
+        "and memory limits enabled. Pull the benchmark images before this check."
     )
     try:
         subprocess.run(prefix + ["info"], check=True, capture_output=True, text=True, timeout=30)
@@ -72,7 +111,9 @@ def check_runtime(run_config):
         "/bin/sh",
         image,
         "-c",
-        "cat /proc/sys/kernel/random/boot_id",
+        'if command -v python3 >/dev/null 2>&1; then exec python3 -c "$1"; else exec python -c "$1"; fi',
+        "tokenmoe-probe",
+        Path(__file__).with_name("container_probe.py").read_text(),
     ]
     try:
         result = subprocess.run(
@@ -90,19 +131,23 @@ def check_runtime(run_config):
             pass
         detail = getattr(exc, "stderr", None) or str(exc)
         raise RuntimeError(f"Task container startup check failed: {detail}\n{hint}") from exc
+    probe = json.loads(result.stdout)
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    if result.stdout.strip() != boot_id:
+    if probe.get("boot_id") != boot_id:
         raise ValueError(
             "Task containers and collector must share the same Linux host boot clock; "
             "the selected daemon appears to run on another host or VM"
         )
+    validate_limits(config, probe)
     return {
         "passed": True,
         "runtime": runtime,
         "runtime_socket": config.get("runtime_socket"),
+        "runtime_executable": config.get("runtime_executable"),
         "image": image,
         "boot_id": boot_id,
         "cpu_quota": config.get("cpu_quota"),
         "memory_limit": config.get("memory_limit"),
-        "scope": "task image startup with configured limits and same-host boot clock",
+        "kernel_limits": probe,
+        "scope": "task image startup, kernel cgroup limits and same-host boot clock",
     }

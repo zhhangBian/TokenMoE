@@ -63,7 +63,9 @@ def pull_images(run_config):
     config = load_yaml(config_path)
     if config["runtime"] not in {"docker", "podman"}:
         raise ValueError("Image pulls require docker or podman")
-    prefix = runtime_command(config["runtime"], config.get("runtime_socket"))
+    prefix = runtime_command(
+        config["runtime"], config.get("runtime_socket"), config.get("runtime_executable")
+    )
     dataset_path = (config_path.parent / Path(config["dataset_path"]).expanduser()).resolve()
     for item in load_benchmark(dataset_path, config["instances"]):
         args = [*prefix, "pull", image_name(item)]

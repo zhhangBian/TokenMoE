@@ -50,6 +50,9 @@ def main(argv=None):
     parser.add_argument(
         "--runtime-socket", help="Host Docker Unix socket path visible inside the collector"
     )
+    parser.add_argument(
+        "--runtime-executable", help="Absolute path to a tested local runtime entry point"
+    )
     parser.add_argument("--model-path", action="append", default=[], metavar="MODEL=PATH")
     parser.add_argument("--tp", action="append", default=[], metavar="MODEL=COUNT")
     parser.add_argument("--max-model-len", type=positive)
@@ -64,7 +67,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
-        runtime_command(args.runtime, args.runtime_socket)
+        runtime_command(args.runtime, args.runtime_socket, args.runtime_executable)
     except ValueError as exc:
         parser.error(str(exc))
     if args.cpu_quota is not None and args.cpu_quota <= 0:
@@ -121,6 +124,7 @@ def main(argv=None):
                 "cpu_quota",
                 "memory_limit",
                 "runtime_socket",
+                "runtime_executable",
             ]:
                 value = getattr(args, key)
                 if value is not None:
@@ -141,6 +145,7 @@ def main(argv=None):
                             "output_dir",
                             "runtime",
                             "runtime_socket",
+                            "runtime_executable",
                             "concurrency_matrix",
                             "base_seed",
                             "step_limit",
