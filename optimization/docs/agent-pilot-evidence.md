@@ -131,3 +131,22 @@ limits. The fixed-input service gate fails; full-workflow timing remains
 unqualified. Cache-specific host/control costs require further measurement.
 The failed v1 adapter run is retained separately; its treatment of internal
 warmup request IDs was corrected without changing the frozen timing model.
+
+Runtime host-path experiments retain their negative results. Frozen source v5
+(root `70390e5`, fork `a3b2276864`) replaces the device mapping table with
+host-resolved physical IDs, avoids repeated polling on resident hits, and tests
+CPU-group TP agreement. `qwen-agent-prefix-tensors-20261023-v5` passes all 288
+files. Its stress run passes delayed-shard and post-cancellation equality; a
+deliberately exited worker raises `EngineDeadError` and releases both workers
+within 10.845 s without watchdog intervention. The existing shared-memory
+resource-tracker warning remains recorded after this intentional failure.
+
+The normal-exit repeat `qwen-agent-prefix-c64-tp2-20261023-v6` takes
+2.507/2.445/2.557 s and drops 6,987/4,511 detailed events on ranks 0/1.
+`qwen-agent-prefix-costs-20261023-v6` correctly rejects fitting. Across the same
+1,968 layer forwards, median router-sync-end to demand-start host time grows
+from 0.714 ms in v2 to 1.011 ms in v6. This CPU-group variant is rejected for
+performance qualification. Subsequent code retains NCCL agreement with one
+host read for both route/order and plan-epoch checks, and uses the existing
+msgspec dependency for buffered binary JSON encoding. It requires a fresh
+loss-free matched run before use in agent comparisons.
