@@ -150,3 +150,13 @@ performance qualification. Subsequent code retains NCCL agreement with one
 host read for both route/order and plan-epoch checks, and uses the existing
 msgspec dependency for buffered binary JSON encoding. It requires a fresh
 loss-free matched run before use in agent comparisons.
+
+Frozen source v6 (root `5acf923`, fork `d26f2fb47e`) passes the repeated 288-file
+gate at `qwen-agent-prefix-tensors-20261023-v7`. Short cached trials fall to
+1.241/1.154/1.237 s, but ranks 0/1 still drop 4,838/4,827 detailed records.
+The corresponding cost fit remains rejected. The next writer revision raises
+its finite admission bound to 16,384 and exports that capacity in configuration
+and status; a stalled consumer still triggers nonblocking, counted drops.
+`qwen-forced-layer-hostmap-20261023-v1` independently verifies real layer-0
+weights with 97 selected logical experts at capacity 16: TP1 and both TP2
+shards have zero output error under forced identical inputs.
