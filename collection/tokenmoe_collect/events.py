@@ -71,6 +71,8 @@ def project(states, kind, fields):
             tool.update(
                 status="completed", outcome=fields.get("outcome"), finished_at=fields["source_at"]
             )
+        elif kind == "tool_termination_failed":
+            state["unknown"] = True
 
 
 class BoundedEventSink:

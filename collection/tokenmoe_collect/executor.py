@@ -1,11 +1,14 @@
 """Merged-pipe streaming execution; local runtime is for CPU tests only."""
 
+import json
 import os
 import selectors
 import signal
 import subprocess
 import threading
 import time
+import uuid
+from pathlib import Path
 
 from .clock import now
 from .events import emit
@@ -55,6 +58,30 @@ class StreamingExecutor:
 
     def execute(self, command, tool_call_id, timeout, *, cwd=None):
         argv = self.command(command, cwd)
+        launched = argv
+        if self.runtime != "local":
+            prefix = argv[: -len(self.interpreter) - 1]
+            helper = Path(__file__).with_name("container_tool.py").read_text()
+            status = f"/tmp/tokenmoe-tool-{uuid.uuid4().hex}.json"
+
+            def container_command(mode, *args):
+                select_python = (
+                    'if command -v python3 >/dev/null 2>&1; then exec python3 -u -c "$@"; '
+                    'else exec python -u -c "$@"; fi'
+                )
+                return [
+                    *prefix,
+                    "/bin/sh",
+                    "-c",
+                    select_python,
+                    "tokenmoe-tool",
+                    helper,
+                    mode,
+                    status,
+                    *args,
+                ]
+
+            launched = container_command("launch", json.dumps([*self.interpreter, command]))
         destination = self.store.outputs / f"{tool_call_id}.out"
         output = bytearray()
         chunks = 0
@@ -71,12 +98,45 @@ class StreamingExecutor:
         timed_out = False
         error = None
         returncode = -1
+        stopped, fatal = self.runtime == "local", False
+
+        def stop():
+            nonlocal stopped, fatal
+            if self.runtime != "local":
+                try:
+                    result = subprocess.run(
+                        container_command("kill"),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    stopped = json.loads(result.stdout)["terminated"] is True
+                except Exception:
+                    stopped = False
+                if not stopped:
+                    fatal = True
+                    cleanup = subprocess.run(
+                        [*self.runtime_argv, "kill", self.container_id],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    stopped = cleanup.returncode == 0
+                    raise RuntimeError(
+                        "Could not confirm tool termination; aborting session container"
+                    )
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
         with self._lock:
             self._active += 1
         try:
             with destination.open("xb") as raw:
                 process = subprocess.Popen(
-                    argv,
+                    launched,
                     cwd=(cwd or self.cwd) if self.runtime == "local" else None,
                     env=os.environ | self.environment if self.runtime == "local" else None,
                     stdout=subprocess.PIPE,
@@ -90,7 +150,7 @@ class StreamingExecutor:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0 and not timed_out:
                             timed_out = True
-                            os.killpg(process.pid, signal.SIGKILL)
+                            stop()
                         events = selector.select(max(0, remaining) if not timed_out else 0.1)
                         for key, _ in events:
                             data = os.read(key.fd, 65536)
@@ -127,22 +187,35 @@ class StreamingExecutor:
                         returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
                         timed_out = True
-                        os.killpg(process.pid, signal.SIGKILL)
+                        stop()
                         returncode = process.wait()
+                stopped = True
                 if timed_out:
                     error = subprocess.TimeoutExpired(argv, timeout, output=bytes(output))
-        except Exception as exc:
+        except BaseException as exc:
             error = exc
+            fatal = fatal or not isinstance(exc, Exception)
+            if process is None:
+                stopped = True
             if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+                try:
+                    stop()
+                except Exception as cleanup_error:
+                    error, fatal = cleanup_error, True
+                finally:
+                    if process.poll() is None:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    process.wait()
         finally:
             if process is not None and process.stdout is not None:
                 process.stdout.close()
             finished = now()
             emit(
                 self.store,
-                "tool_completed",
+                "tool_completed" if stopped and not fatal else "tool_termination_failed",
                 source_at=finished,
                 session_id=self.session_id,
                 tool_id=tool_call_id,
@@ -150,6 +223,8 @@ class StreamingExecutor:
             )
             with self._lock:
                 self._active -= 1
+        if fatal:
+            raise error
         # subprocess.run(text=True) uses universal newline translation.
         text = (
             bytes(output)

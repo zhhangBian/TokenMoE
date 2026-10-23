@@ -110,6 +110,15 @@ def test_event_gap_suppresses_predictions_until_observed_snapshot():
         state.receive({**event(5, "tool_started"), "clock_domain_id": "other"})
 
 
+def test_unconfirmed_tool_termination_suppresses_predictions():
+    state = SessionState()
+    state.receive(event(1, "session_started"), received_at=2)
+    state.receive(event(2, "tool_started", tool_id="a"), received_at=3)
+    state.receive(event(3, "tool_termination_failed", tool_id="a"), received_at=4)
+    assert not state.decision("s", decision_at=4)["predictive_demand"]
+    assert state.states["s"]["tools"]["a"]["status"] == "running"
+
+
 def test_forgotten_or_unobserved_session_cannot_reactivate_from_progress():
     state = SessionState()
     state.receive(event(1, "session_started"), received_at=2)

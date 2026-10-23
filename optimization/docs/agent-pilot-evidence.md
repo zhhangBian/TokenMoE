@@ -176,3 +176,43 @@ the other 16 task groups, with the same rule applied to duration training and
 inner tuning. This prepares a shared-controller N4 comparison; no confirmation
 task has been executed. Agent source-stability checks now include fork Python
 and configuration files as well as CPU code, independent of the fork commit ID.
+
+The first real `previous+tool` pilot is
+`qwen-agent-pilot-tool64-n1-20261023-v1`, with extracted metrics at
+`qwen-agent-pilot-tool64-n1-metrics-20261023-v1`. Root `bd4b03a` and fork
+`d16b0ef3ee` are frozen in source worktree v8. All 13 requests completed at the
+transport level; the task ended with `timeout/TimeExceeded` after 938.403 s.
+The measurement window is 940.088 s. Engine TTFT p95 is 15.919 s (13 requests),
+required-tool completion to complete response p95 is 87.825 s (12), and endpoint
+TPOT p50 is 0.15293 s/token. Both latency targets fail. Sampled measured GPU
+peaks are 27,510,571,008 / 27,470,725,120 bytes, with 66,248,478,720 bytes of
+sampled process-tree RSS. All side channels complete with zero loss or errors;
+each rank exports 10,991,173 records. Shutdown needs no forced cleanup.
+
+The controller emits 261 decisions and delivers 524 rank plans, including final
+withdrawal. No evaluation session is rejected as training data. The recorded
+plan-producing cycles have wall-time p50 35.069 ms and p95 38.149 ms; these
+records do not measure every controller cycle or lifetime process CPU usage.
+Per-rank measured transfer admissions are 817,085,546,496 bytes, including
+speculation. Demand recovery totals 293.200 / 296.901 s; device copy totals
+47.647 / 47.598 s. Those intervals overlap and cannot be added or subtracted
+to claim exact exposed component time. Further profiling must separate host
+staging and repeated readiness polling. This newer runtime and 16-task prior
+differ from the original LRU pilot; no agent-feature gain is established.
+
+The descriptive summary `qwen-agent-pilot-comparison-20261023-v1` checks the
+original native and LRU pilots and retains missing repetition, source equality,
+fork-file hashing, complete native export and verified rotation prerequisites.
+It publishes no paired speed ratio. The new `compare-agents` command keeps
+these checks separate from the observations in individual pilot cells.
+
+A separate real-Podman mechanism check,
+`container-timeout-qualification-20261023-v1`, reproduces a harness fault: killing
+the host exec client left its container tool alive. The repair isolates each
+tool's process group and checks termination inside the container before emitting
+completion; failure to confirm termination aborts the owned session and marks
+its control state unknown. The check verifies that an unrelated parallel process
+survives, ordinary exit code 124 remains an ordinary failure, and raw output is
+unchanged. It is synthetic mechanism evidence, excluded from real long-tool
+coverage. The completed agent pilot has no timed-out tools and retains its
+original frozen harness source.

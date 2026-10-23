@@ -293,7 +293,7 @@ chunk_time
 byte_offset, byte_length        指向该 tool call 的原始输出文件
 ```
 
-每个 tool call 保存一个 `tool_outputs/<tool_call_id>.out` 文件；chunk 只记时间与偏移，offset 连续铺满文件。超时杀死 exec 进程、保留已收到的输出，按 mini-swe-agent 2.4.6 返回包含 partial output、returncode=-1、exception_info 的错误结果，再渲染原 observation。chunk 的划分以执行器读到数据的时刻为准，不按行切分。这份记录是进度读取器的全部训练数据：每个 chunk 时刻的剩余时间标签由 `finished_at - chunk_time` 派生。工作目录的文件系统事件不在第一阶段范围内。
+每个 tool call 保存一个 `tool_outputs/<tool_call_id>.out` 文件；chunk 只记时间与偏移，offset 连续铺满文件。超时终止该工具的进程组、保留已收到的输出，按 mini-swe-agent 2.4.6 返回包含 partial output、returncode=-1、exception_info 的错误结果，再渲染原 observation。容器执行会在内部隔离工具进程组并记录 PID 与启动标识；超时时进入同一容器终止并核查该组，确认后才发送 `tool_completed`。无法确认终止时中止所属会话容器，发送 `tool_termination_failed`，控制状态标为 unknown，不生成就绪预测。合法的命令退出码 124 不会被当成超时。chunk 的划分以执行器读到数据的时刻为准，不按行切分。这份记录是进度读取器的全部训练数据：每个 chunk 时刻的剩余时间标签由 `finished_at - chunk_time` 派生。工作目录的文件系统事件不在第一阶段范围内。
 
 ### 4.7 Engine Step
 

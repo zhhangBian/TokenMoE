@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -6,6 +9,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from tokenmoe_collect import container_tool
 from tokenmoe_collect.client import ChatClient
 from tokenmoe_collect.executor import StreamingExecutor
 from tokenmoe_collect.hostload import HostSampler
@@ -155,6 +159,78 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(output["returncode"], -1)
             self.assertEqual(output["extra"]["exception_type"], "TimeoutExpired")
             self.assertEqual((store.outputs / "tc_timeout.out").read_bytes(), b"partial")
+
+    def test_container_supervision_preserves_bytes_and_real_exit_124(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = Path(tmp) / "status.json"
+            code = "import os;os.write(1,b'one\\r\\n');os.write(2,b'two\\n');raise SystemExit(124)"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    container_tool.__file__,
+                    "launch",
+                    str(status),
+                    json.dumps([sys.executable, "-c", code]),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=6,
+            )
+            self.assertEqual(result.returncode, 124)
+            self.assertEqual(result.stdout, b"one\r\ntwo\n")
+            self.assertTrue(status.exists())
+
+    def test_container_supervision_kills_descendants_before_timeout_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status, child = Path(tmp) / "status.json", Path(tmp) / "child.pid"
+            code = (
+                "import pathlib,subprocess,sys,time;"
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+                "pathlib.Path(sys.argv[1]).write_text(str(p.pid));"
+                "print('partial',flush=True);time.sleep(30)"
+            )
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    container_tool.__file__,
+                    "launch",
+                    str(status),
+                    json.dumps([sys.executable, "-c", code, str(child)]),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+                deadline = time.monotonic() + 3
+                while not child.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(child.exists())
+                result = subprocess.run(
+                    [sys.executable, container_tool.__file__, "kill", str(status)],
+                    capture_output=True,
+                    timeout=3,
+                )
+                self.assertTrue(json.loads(result.stdout)["terminated"])
+                stdout, _ = process.communicate(timeout=3)
+                self.assertEqual(stdout, b"partial\n")
+                self.assertEqual(process.returncode, -9)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, 9)
+                    process.wait(timeout=3)
+            try:
+                state = (
+                    Path(f"/proc/{int(child.read_text())}/stat").read_text().split(") ", 1)[1][0]
+                )
+            except FileNotFoundError:
+                state = "gone"
+            self.assertIn(state, {"Z", "gone"})
+
+    def test_container_termination_rejects_a_reused_process_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = Path(tmp) / "status.json"
+            status.write_text(json.dumps({"pid": os.getpid(), "start": "wrong-start"}))
+            self.assertFalse(container_tool.terminate(status))
 
     def test_sampler_writes_repeated_rows_with_null_gpu_metrics(self):
         class FakeSource:
