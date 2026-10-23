@@ -29,6 +29,7 @@ def main(argv=None):
     plan.add_argument("--inputs", type=Path, required=True)
     plan.add_argument("--confirmation-split", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument("--prefill-execution", choices=["tokens", "expert-major"], default="tokens")
     arrivals = commands.add_parser("arrivals")
     arrivals.add_argument("--inputs", type=Path, required=True)
     arrivals.add_argument("--output", type=Path, required=True)
@@ -245,6 +246,7 @@ def main(argv=None):
             splits["groups"],
             confirmation["groups"],
             sampling=training_sampling(inputs),
+            prefill_execution=args.prefill_execution,
         )
         protocol["confirmation_source"] = {
             "path": str(args.confirmation_split.resolve()),

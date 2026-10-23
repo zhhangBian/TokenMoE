@@ -155,6 +155,16 @@ def test_controller_rejects_different_model_costs_and_future_receipts():
         )
 
 
+def test_expert_major_prefetch_cannot_reuse_token_transfer_benefits():
+    c = controller()
+    with pytest.raises(ValueError, match="transfer-benefit"):
+        ResidencyController(
+            c.predictor,
+            c.durations,
+            {**c.cost, "cache_execution": {"prefill_execution": "expert-major"}},
+        )
+
+
 def test_compact_feedback_is_deduplicated_and_not_observed_before_receipt(tmp_path):
     p = predictor()
     feedback = FeedbackHistory(p)

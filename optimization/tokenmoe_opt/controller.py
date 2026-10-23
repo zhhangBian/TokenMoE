@@ -208,6 +208,13 @@ class ResidencyController:
         if not cost_profile.get("measured"):
             raise ValueError("A measured copy/compute cost profile is required")
         if (
+            cache_execution(cost_profile.get("cache_execution", {}))["prefill_execution"]
+            != "tokens"
+        ):
+            raise ValueError(
+                "Predictive prefetch for expert-major execution requires a qualified transfer-benefit model"
+            )
+        if (
             not 0 < horizon <= 5
             or cost_profile.get("decode_token_seconds", 0) <= 0
             or cost_profile.get("prefill_seconds", -1) < 0

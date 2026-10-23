@@ -5,7 +5,7 @@ from pathlib import Path
 from tokenmoe_collect.assets import sha256_file
 from tokenmoe_collect.jsonl import read_jsonl
 
-from .artifacts import manifest
+from .artifacts import cache_execution, manifest
 
 
 def training_sampling(inputs):
@@ -29,12 +29,13 @@ def training_sampling(inputs):
     return selected[0]
 
 
-def local_protocol(identity, tasks, confirmation_tasks, *, sampling):
+def local_protocol(identity, tasks, confirmation_tasks, *, sampling, prefill_execution="tokens"):
     if not tasks or not confirmation_tasks:
         raise ValueError("Exploration and untouched confirmation task groups are required")
     if set(tasks) & set(confirmation_tasks):
         raise ValueError("Confirmation tasks overlap exploration groups")
-    return manifest(
+    execution = cache_execution({"prefill_execution": prefill_execution})
+    result = manifest(
         "experiment",
         identity,
         protocol_id="qwen-residency-local-v4",
@@ -133,3 +134,13 @@ def local_protocol(identity, tasks, confirmation_tasks, *, sampling):
             for key in ("backend", "local_evaluation", "long_tools", "multi_role", "migration")
         },
     )
+    if execution["prefill_execution"] == "expert-major":
+        result.update(
+            protocol_id="qwen-residency-local-v5-expert-major-mechanism",
+            parent_protocol="qwen-residency-local-v4; token-executor agent comparisons remain separate",
+            policies=["full", "uva", "layer-prefetch", "lru", "lfu"],
+            predictive_policy_status="unqualified: the token-microbatch avoided-stall model cannot be reused for expert-major transfers",
+        )
+        result["execution"].update(execution)
+        result["mechanism"]["cache_scratch_bytes_per_rank"] = 192 * 1024**2
+    return result

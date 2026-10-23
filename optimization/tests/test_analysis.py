@@ -244,6 +244,18 @@ def test_protocol_requires_disjoint_confirmation_and_preserves_agent_budget():
     assert protocol["measured_repetitions"] >= 3
     assert protocol["devices"] == [2, 3]
     assert all(status == "outstanding" for status in protocol["milestones"].values())
+    expert = local_protocol(
+        {"model": "qwen"},
+        ["explored"],
+        ["untouched"],
+        sampling=sampling,
+        prefill_execution="expert-major",
+    )
+    assert expert["protocol_id"] != protocol["protocol_id"]
+    assert expert["sampling"] == protocol["sampling"]
+    assert expert["latency_targets"] == protocol["latency_targets"]
+    assert expert["mechanism"]["cache_scratch_bytes_per_rank"] == 192 * 1024**2
+    assert "previous+tool" not in expert["policies"]
 
 
 def test_overflow_partitions_preserve_tokens_topk_and_shared_loads():
