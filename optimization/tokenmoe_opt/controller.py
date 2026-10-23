@@ -449,7 +449,10 @@ def deliver(decision, snapshots, directory):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
                 sender.setblocking(False)
-                sender.sendto(payload, str(Path(directory) / f"rank-{snapshot['rank']}.sock"))
+                address = snapshot.get("mailbox_socket") or str(
+                    Path(directory) / f"rank-{snapshot['rank']}.sock"
+                )
+                sender.sendto(payload, address)
             delivered.append(snapshot["rank"])
         except (BlockingIOError, FileNotFoundError, ConnectionRefusedError):
             pass

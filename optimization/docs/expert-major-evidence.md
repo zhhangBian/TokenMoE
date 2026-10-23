@@ -64,3 +64,11 @@ regresses. The v1 initial-state description was incorrect and is retained with
 the correction in v2. `qwen-route-pair-algebra-20261023-v1` is a one-layer
 full-bank algebra check, not a bounded-storage experiment. Neither diagnostic
 substitutes for the live qualification above.
+
+The first agent attempt `qwen-agent-pilot-expertmajor-lru64-n1-20261023-v1`
+fails before any agent request: its longer output directory exceeds the UNIX
+socket pathname bound. The workers terminate and the failure is preserved.
+The repaired mailbox binds through an open private-directory descriptor and
+advertises its short address in worker state, retaining the original socket
+and state-file locations and permissions. A cross-process regression test uses
+a directory longer than 108 bytes and checks delivery and repeated cleanup.

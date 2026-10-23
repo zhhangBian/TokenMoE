@@ -90,7 +90,8 @@ def session_event(c, sequence, kind, **fields):
     }
 
 
-def test_received_features_drive_shared_plan_and_worker_delivery(tmp_path):
+@pytest.mark.parametrize("advertised", [False, True])
+def test_received_features_drive_shared_plan_and_worker_delivery(tmp_path, advertised):
     c = controller()
     c.event(session_event(c, 1, "session_started", identity=c.predictor.identity), receipt=10)
     decision = None
@@ -98,10 +99,16 @@ def test_received_features_drive_shared_plan_and_worker_delivery(tmp_path):
         decision = c.decide([snapshot()], decision_at=time)
     assert decision["transfers"] and decision["visible_sequences"] == {"p": 1}
     assert len(decision["desired"]["0"]) == 2
+    state = snapshot()
+    address = tmp_path / ("endpoint.sock" if advertised else "rank-0.sock")
+    if advertised:
+        state["mailbox_socket"] = str(address)
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
-        receiver.bind(str(tmp_path / "rank-0.sock"))
+        receiver.bind(str(address))
         receiver.settimeout(1)
-        assert deliver(decision, [snapshot()], tmp_path) == [0]
+        assert deliver(
+            decision, [state], tmp_path / ("long-" * 40) if advertised else tmp_path
+        ) == [0]
         packet = json.loads(receiver.recv(65536))
     assert packet["engine_id"] == "engine" and packet["model_hash"] == "model"
     assert packet["transfers"] == decision["transfers"]

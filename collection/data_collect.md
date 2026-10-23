@@ -101,6 +101,8 @@ Cache configuration and worker snapshots additionally identify `prefill_executio
 
 Controller `cycles.jsonl` records every loop body with common-clock start/end, wall and process-CPU nanoseconds, plan emission and actual running/waiting counts. Metrics include only complete cycles inside the measured window and expose missing legacy observations as null. Process CPU through loop completion includes startup/source validation; final cancellation and output bookkeeping are outside that observation.
 
+Worker state optionally advertises `mailbox_socket`, a short Linux process-directory-descriptor address for the private UNIX datagram socket. The socket and state files remain in the configured UID-private directory, including when its full pathname exceeds the UNIX socket address limit. Controllers prefer the advertised endpoint and retain the historical `rank-N.sock` fallback. Shutdown closes the directory descriptor after the mailbox thread stops and removes the owned socket.
+
 ```text
 model_profile_id
 model_id, revision_hash, architecture
