@@ -112,6 +112,18 @@ Slots follow `FREE -> LOADING -> READY -> IN_USE -> READY`; only unpinned READY 
 
 TP ranks install a common logical plan version and execute matching token partitions. Each rank waits for its own shard readiness before the agreed compute/collective sequence. Missing-shard or peer failure aborts the affected execution with evidence; it does not return partial output. Shutdown stops new plans and drains or records outstanding copies before freeing buffers.
 
+The initial live 64-slot pilot exposes repeated prefill loads as a separate
+execution cost. An optional expert-major prefill profile groups only the actual
+router-selected token/expert pairs already available in the current batch. It
+reuses the existing unquantized Triton expert operation and `moe_sum`, stores each
+contribution at its original token/top-k position, and reduces in the original
+order. Expert groups retain pins across bounded pair chunks; current-batch
+frequency orders groups so hotter experts remain resident at the boundary.
+This mode is default-off, reserves per-route output scratch explicitly, leaves
+small batches/decode on the token executor, and requires fresh numerical, TP
+failure and cost qualification. The one-layer algebra prototype is not backend
+qualification. Graph support remains unqualified.
+
 ### 7. Integrate at verified fork seams
 
 All paths below are repository-relative. Except the explicitly fork-added recorder, these hook files exist at baseline commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`; implementation must record the actual fork revision and patches.

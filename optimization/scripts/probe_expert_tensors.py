@@ -19,6 +19,7 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_router import fused_
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--prefill-execution", choices=["tokens", "expert-major"], default="tokens")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     model = Path("/home/youwei/bzh/model/Qwen/Qwen3-30B-A3B")
@@ -39,7 +40,8 @@ def main():
         host2.append(weight(key + ".down_proj.weight"))
     full13, full2 = torch.stack(host13), torch.stack(host2)
     torch.manual_seed(42)
-    x = torch.randn(32, 2048, dtype=torch.bfloat16, device="cuda") * 0.2
+    tokens = 128 if args.prefill_execution == "expert-major" else 32
+    x = torch.randn(tokens, 2048, dtype=torch.bfloat16, device="cuda") * 0.2
     logits = torch.nn.functional.linear(x, gate).float()
     coefficients, ids, _ = fused_topk(x, logits, 8, True)
     result = {
@@ -47,6 +49,7 @@ def main():
         "scope": "real Qwen layer 0; forced identical inputs and actual router",
         "criteria": {"atol": 0.02, "rtol": 0.02},
         "devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "prefill_execution": args.prefill_execution,
         "status": "running",
         "shards": [],
     }
@@ -70,7 +73,12 @@ def main():
                 cache = ExpertCache(
                     w13,
                     w2,
-                    ExpertCacheConfig(enabled=True, slots_per_layer=16),
+                    ExpertCacheConfig(
+                        enabled=True,
+                        slots_per_layer=16,
+                        prefill_execution=args.prefill_execution,
+                        scratch_bytes=192 * 1024**2,
+                    ),
                     torch.device("cuda", 0),
                 )
 

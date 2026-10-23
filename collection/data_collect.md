@@ -97,6 +97,8 @@ The observer exports `export_capacity` in its configuration and `capacity` in fi
 
 Windowed optimization metrics track the cohort of prefetches admitted inside that window. `prefetch_bytes_started` and `used_prefetch_bytes` count admission and first observed use; unused ready bytes and unused in-flight bytes at the boundary are separate. A copy issued before the boundary but not yet observed complete is not reported as resident-ready storage. These cohort counters do not include speculative transfers admitted before the window.
 
+Cache configuration and worker snapshots additionally identify `prefill_execution` and `max_route_pairs`. The optional expert-major prefill path records one demand/readiness group per capacity-fitting expert tile, retains pins through every route-pair chunk, and counts actual `route_pairs` and `route_pair_chunks`. Its group count has a different interpretation from token microbatches and must be read with the execution identity. The original token/phase feedback remains in original request-position order. Route-output scratch is explicit in the rank budget; correctness and cost profiles for the two execution modes are separate.
+
 ```text
 model_profile_id
 model_id, revision_hash, architecture

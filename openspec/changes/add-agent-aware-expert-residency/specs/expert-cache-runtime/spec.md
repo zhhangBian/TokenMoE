@@ -28,9 +28,15 @@ The backend SHALL execute the actual router-selected experts with their original
 
 Every supported layer allocation SHALL provide at least top-k usable slots under the initial executor. If a scheduled batch's distinct expert union exceeds capacity, the backend SHALL partition tokens into deterministic disjoint microbatches whose individual expert unions fit. It SHALL preserve each token's original top-k order and coefficients, execute each token exactly once, restore output order, and account for reloads and scratch. It SHALL reject an allocation that cannot execute one token and SHALL NOT bypass the budget with an unreported full-layer allocation.
 
+An independently qualified, default-off expert-major prefill executor MAY instead partition the current scheduled batch's actual token/expert pairs into capacity-fitting expert groups. It SHALL compute every selected contribution exactly once, scatter contributions to their original token/top-k positions, and reduce them in the original top-k order using the existing unquantized kernels. It SHALL retain demand pins until every chunk using a group completes, bound route-pair chunks, and explicitly reserve the per-route output scratch before loading. It SHALL use no future layer/request routes and SHALL not encode omitted contributions as absent experts. Small batches and decode SHALL retain the initial token executor.
+
 #### Scenario: Prefill touches most experts
 - **WHEN** prefill selects more distinct experts than the layer's 32 usable slots
 - **THEN** the backend processes capacity-fitting token microbatches, returns outputs in the original order, and records the actual repeated transfers and peak memory
+
+#### Scenario: Expert-major prefill exceeds its scratch reservation
+- **WHEN** expert-major execution is requested without enough scratch for the configured scheduled-token limit and original top-k outputs
+- **THEN** configuration fails before loading rather than silently increasing the GPU budget
 
 ### Requirement: Slot lifetime and asynchronous copy correctness
 

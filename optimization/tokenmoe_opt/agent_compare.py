@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tokenmoe_collect.assets import sha256_file
 
-from .artifacts import Output, digest, read_manifest
+from .artifacts import Output, cache_execution, digest, read_manifest
 
 
 def preconditions(rows, repetitions):
@@ -19,6 +19,10 @@ def preconditions(rows, repetitions):
         "same_model_template": len({r["identity"] for r in rows}) == 1,
         "same_sampling_kv_scheduler_graph": len({r["configuration"] for r in rows}) == 1,
         "same_runtime_sources": len({r["runtime_sources"] for r in rows}) == 1,
+        "same_cache_execution": len(
+            {r.get("cache_execution") for r in rows if r.get("cache_execution") is not None}
+        )
+        <= 1,
         "fork_files_hashed": all(r["fork_files_hashed"] for r in rows),
         "same_devices": len({tuple(r["devices"]) for r in rows}) == 1,
         "same_task_and_concurrency_groups": len(
@@ -82,6 +86,7 @@ def summarize(trials, output, *, command):
         configuration["sampling"] = protocol["sampling"]
         configuration["warmup"] = protocol["warmup"]
         files = experiment["source"]["files"]
+        cache = serve.get("expert_cache_config", {})
         rows.append(
             {
                 **cell,
@@ -95,6 +100,7 @@ def summarize(trials, output, *, command):
                     {"files": files, "fork": experiment["source"]["fork_commit"]}
                 ),
                 "fork_files_hashed": any(p.startswith("vllm/vllm/") for p in files),
+                "cache_execution": digest(cache_execution(cache)) if cache.get("enabled") else None,
                 "devices": sorted(d["uuid"] for d in measured["memory"]["metadata"]["devices"]),
                 "side_channel_complete": measured["side_channel_export_complete"] is True,
                 "source_stable": experiment.get("source_stable", False),

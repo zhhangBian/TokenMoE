@@ -13,6 +13,13 @@ KINDS = {"input", "split", "predictor", "cost-profile", "experiment", "result"}
 MILESTONES = ("analysis", "backend", "local_evaluation", "workload_expansion", "migration")
 
 
+def cache_execution(config):
+    mode, pairs = config.get("prefill_execution", "tokens"), config.get("max_route_pairs", 256)
+    if mode not in {"tokens", "expert-major"} or type(pairs) is not int or not 1 <= pairs <= 1024:
+        raise ValueError("Unsupported cache execution profile")
+    return {"prefill_execution": mode, "max_route_pairs": pairs}
+
+
 def digest(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, allow_nan=False, separators=(",", ":")).encode()

@@ -32,6 +32,7 @@ The implementing agent owns local setup, verification, and authorized runs. Thes
 - [x] 4.5 Run the relevant CPU checks and verify the fork still installs with `VLLM_USE_PRECOMPILED=1`; retain Python-only source changes and record the fork revision/patches.
 - [x] 4.6 Recheck actual local resources and run small Qwen TP1/TP2 eager qualification: CPU-first startup peak, forced-token tensors, real routing, greedy outputs, demand misses, overflow, cancellation, and shutdown under fixed numeric criteria.
 - [x] 4.7 Record cache-off and repeated-baseline behavior, observer cost, demand synchronization, copy/compute cost, and native graph-enabled full-resident performance; do not proceed with a configuration that fails correctness.
+- [ ] 4.8 Qualify optional expert-major prefill execution after measured token-microbatch reload amplification: bound route-pair scratch/chunks, preserve every selected contribution and original top-k reduction order, and rerun forced-tensor, TP synchronization/failure and matching cost gates before policy comparisons.
 
 ## 5. Live agent events and arrival estimates
 

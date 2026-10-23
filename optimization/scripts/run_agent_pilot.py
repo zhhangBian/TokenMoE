@@ -20,7 +20,7 @@ from tokenmoe_collect.runtime import check_runtime
 from tokenmoe_collect.serving import command as server_command
 from tokenmoe_collect.static import load_yaml
 
-from tokenmoe_opt.artifacts import Output, read_manifest, source_version
+from tokenmoe_opt.artifacts import Output, cache_execution, read_manifest, source_version
 from tokenmoe_opt.controller import load_predictor
 
 
@@ -54,10 +54,13 @@ def main():
         if set(args.task) & set(predictor.artifact["training_tasks"]):
             parser.error("Pilot tasks overlap predictor training groups")
     costs = None
+    execution = cache_execution(protocol["execution"])
     if cached:
         costs = read_manifest(args.cost_profile, "cost-profile")
         if costs["identity"] != protocol["identity"] or len(costs["ranks"]) != 2:
             parser.error("Pilot requires matching measured TP2 costs")
+        if cache_execution(costs["controller"].get("cache_execution", {})) != execution:
+            parser.error("Pilot requires matching measured cache execution costs")
     config_path = args.run_config.resolve()
     config = load_yaml(config_path)
     model = load_yaml((config_path.parent / config["model_config"]).resolve())
@@ -96,11 +99,16 @@ def main():
     cache = {"token_readiness_directory": str(out.path / "observations")}
     if cached:
         size = max(r["expert_bytes"] for r in costs["ranks"].values())
+        scratch = 64 * 1024**2
+        if execution["prefill_execution"] == "expert-major":
+            scratch += protocol["mechanism"]["max_num_batched_tokens"] * 8 * 2048 * 2
         cache.update(
+            **execution,
             enabled=True,
             slots_per_layer=args.slots,
             policy=args.policy if args.policy in {"lru", "lfu"} else "lru",
-            budget_bytes_per_rank=48 * (args.slots * size + 128 * 8) + 64 * 1024**2,
+            scratch_bytes=scratch,
+            budget_bytes_per_rank=48 * args.slots * size + scratch,
             telemetry_level="detailed",
             observation_directory=str(out.path / "observations"),
             control_directory=str(out.path / "workers"),

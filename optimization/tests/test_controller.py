@@ -140,6 +140,19 @@ def test_controller_rejects_different_model_costs_and_future_receipts():
         c.decide([snapshot()], decision_at=100)
     with pytest.raises(ValueError, match="another model"):
         c.decide([{**snapshot(), "model_hash": "other"}], decision_at=300)
+    with pytest.raises(ValueError, match="another cache execution"):
+        c.decide(
+            [
+                {
+                    **snapshot(),
+                    "cache_execution": {
+                        "prefill_execution": "expert-major",
+                        "max_route_pairs": 256,
+                    },
+                }
+            ],
+            decision_at=300,
+        )
 
 
 def test_compact_feedback_is_deduplicated_and_not_observed_before_receipt(tmp_path):

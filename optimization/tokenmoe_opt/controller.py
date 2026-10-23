@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from tokenmoe_collect.clock import now
 
-from .artifacts import read_manifest
+from .artifacts import cache_execution, read_manifest
 from .data import PHASES, Sample
 from .features import command_categories
 from .planner import Demand, Ledger, aggregate, plan
@@ -290,6 +290,10 @@ class ResidencyController:
                 return False
             if snapshot["model_hash"] != self.cost["model_hash"]:
                 raise ValueError("Measured costs refer to another model/backend")
+            if cache_execution(snapshot.get("cache_execution", {})) != cache_execution(
+                self.cost.get("cache_execution", {})
+            ):
+                raise ValueError("Measured costs refer to another cache execution mode")
         if {s["device_uuid"] for s in snapshots} != set(self.cost["device_uuids"]):
             raise ValueError("Measured costs refer to another TP/device group")
         return True

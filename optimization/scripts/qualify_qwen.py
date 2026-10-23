@@ -76,6 +76,7 @@ def main():
     parser.add_argument("--native-graph", action="store_true")
     parser.add_argument("--offload", choices=["none", "uva", "prefetch"], default="none")
     parser.add_argument("--slots", type=int, choices=[16, 32, 64, 96, 128], default=16)
+    parser.add_argument("--prefill-execution", choices=["tokens", "expert-major"], default="tokens")
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--max-batched-tokens", type=int, choices=[128, 4096], default=128)
     parser.add_argument("--kv-gib", type=int, choices=[1, 8], default=1)
@@ -88,6 +89,8 @@ def main():
         parser.error("Warmup must be nonnegative and measured repetitions positive")
     if args.cache and (args.native_graph or args.offload != "none"):
         parser.error("Native graph/offloader references require the cache disabled")
+    if not args.cache and args.prefill_execution != "tokens":
+        parser.error("Expert-major prefill requires --cache")
     if (args.control_directory or args.observation != "off") and not args.cache:
         parser.error("Expert observation and control mailboxes require --cache")
     if args.stress and (not args.cache or args.tp != 2):
@@ -125,10 +128,17 @@ def main():
             offload_params=["experts"],
         )
     if args.cache:
-        accounting = ExpertCacheConfig(slots_per_layer=args.slots).memory_accounting(args.tp)
+        scratch = 64 * 1024**2
+        if args.prefill_execution == "expert-major":
+            scratch += args.max_batched_tokens * 8 * 2048 * 2
+        accounting = ExpertCacheConfig(
+            slots_per_layer=args.slots, scratch_bytes=scratch
+        ).memory_accounting(args.tp)
         config["expert_cache_config"] = dict(
             enabled=True,
             slots_per_layer=args.slots,
+            prefill_execution=args.prefill_execution,
+            scratch_bytes=scratch,
             budget_bytes_per_rank=sum(
                 accounting[key]
                 for key in ("resident_bytes", "mapping_bytes", "scratch_bytes", "gpu_staging_bytes")
@@ -413,16 +423,20 @@ def main():
                 raise AssertionError("Delayed-shard qualification failed")
             core = engine.llm_engine
             cancel_id = "qualification-cancel"
-            core.add_request(
-                cancel_id, "Count natural numbers:", SamplingParams(temperature=0, max_tokens=64)
+            cancel_prompt = (
+                {"prompt_token_ids": list(reversed(ids))}
+                if args.prompt_tokens
+                else "Count natural numbers:"
             )
+            core.add_request(cancel_id, cancel_prompt, SamplingParams(temperature=0, max_tokens=64))
             core.step()
             core.abort_request([cancel_id])
             following = engine.generate(
                 prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False
             )
             record["cancellation"] = {
-                "followup_tokens": [out.outputs[0].token_ids for out in following]
+                "forced_prefill_tokens": len(ids) if args.prompt_tokens else None,
+                "followup_tokens": [out.outputs[0].token_ids for out in following],
             }
             if record["cancellation"]["followup_tokens"] != record["trials"][-1]["tokens"]:
                 raise AssertionError("Generation diverged after cancellation")
@@ -444,8 +458,11 @@ def main():
             guard.start()
             failed_at, error = time.monotonic(), None
             try:
+                failure_prompts = (
+                    [{"prompt_token_ids": ids[1:] + ids[:1]}] if args.prompt_tokens else prompts
+                )
                 engine.generate(
-                    prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False
+                    failure_prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False
                 )
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
@@ -474,6 +491,7 @@ def main():
                 "watchdog_required": timed_out.is_set(),
                 "worker_pids": workers,
                 "workers_released": not any(worker_alive(worker) for worker in workers),
+                "forced_prefill_tokens": len(ids) if args.prompt_tokens else None,
             }
             if (
                 error is None

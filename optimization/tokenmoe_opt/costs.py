@@ -8,7 +8,7 @@ from tokenmoe_collect.assets import sha256_file
 from tokenmoe_collect.ids import content_id
 from tokenmoe_collect.jsonl import read_jsonl
 
-from .artifacts import Output, manifest, read_manifest
+from .artifacts import Output, cache_execution, manifest, read_manifest
 from .metrics import token_metrics
 from .validation import validate_cache_events
 
@@ -138,6 +138,7 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
         controller = {
             "version": "copy-recovery-v1",
             "measured": True,
+            "cache_execution": cache_execution(cached["config"]["expert_cache_config"]),
             "model_hash": cached["final_memory"][0]["model_hash"],
             "device_uuids": [d["uuid"] for d in cached["resources"]["metadata"]["devices"]],
             "copy_seconds": float(np.percentile(durations, 90)),
