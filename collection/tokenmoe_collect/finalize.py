@@ -42,6 +42,8 @@ def write_table(path, rows):
 def finalize(run_dir):
     root = Path(run_dir).resolve()
     source = json.loads((root / "engine_source.json").read_text())
+    if source.get("capture_mode") == "metadata-only":
+        raise ValueError("Metadata-only runs use optimization metrics, not collection finalization")
     engine_src = Path(source["path"])
     engine_dir = root / "raw/engine" / source["engine_instance_id"]
     engine_dir.mkdir(parents=True, exist_ok=True)

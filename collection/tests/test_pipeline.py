@@ -56,6 +56,9 @@ def finalized_run(tmp_path, request):
         "engine_config": {"tensor_parallel": 2},
         **clock_metadata(),
     }
+    parameter = getattr(request, "param", "\n")
+    if parameter == "metadata-only":
+        meta["capture_mode"] = "metadata-only"
     write_json(engine / "engine_meta.json", meta)
     write_json(
         engine / "layer_map.json",
@@ -64,8 +67,7 @@ def finalized_run(tmp_path, request):
     (engine / "requests.jsonl").touch()
     (engine / "steps.jsonl").touch()
     calls = []
-    parameter = getattr(request, "param", "\n")
-    prompt_newline = "\n" if parameter == "control-events" else parameter
+    prompt_newline = "\n" if parameter in {"control-events", "metadata-only"} else parameter
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -202,11 +204,16 @@ def finalized_run(tmp_path, request):
         "tool_timeout": 1,
         "output_dir": str(tmp_path / "run"),
         "engine_dir": str(engine),
-        "control_events": parameter == "control-events",
+        "control_events": parameter in {"control-events", "metadata-only"},
     }
+    if parameter == "metadata-only":
+        config["collection_profile"] = "optimization-agent-v1"
     (tmp_path / "run.yaml").write_text(yaml.safe_dump(config))
     try:
         root = run(tmp_path / "run.yaml", sampler_source=FakeHost())
+        if parameter == "metadata-only":
+            yield root, calls, config
+            return
         equivalence = root / "static/equivalence/fixture-config.json"
         write_json(
             equivalence, {"engine_config_id": "fixture-config", "passed": True, "num_prompts": 50}
@@ -240,6 +247,23 @@ def test_real_agent_fake_transport_roundtrip(finalized_run):
     assert json.loads((root / "alignment.json").read_text())["location_rate"] == 1.0
     with pytest.raises(FileExistsError):
         run(root.parent / "run.yaml", sampler_source=FakeHost())
+
+
+@pytest.mark.parametrize("finalized_run", ["metadata-only"], indirect=True)
+def test_metadata_only_agent_retains_raw_outcomes_and_cannot_finalize_as_full_trace(finalized_run):
+    root, calls, config = finalized_run
+    source = json.loads((root / "engine_source.json").read_text())
+    assert source["capture_mode"] == "metadata-only"
+    sessions = [row for p in root.glob("raw/harness/*/sessions.jsonl") for row in read_jsonl(p)]
+    assert len(sessions) == 1 and sessions[0]["final_status"] == "succeeded"
+    assert len(calls) == 3
+    with pytest.raises(ValueError, match="optimization metrics"):
+        finalize(root)
+    config["collection_profile"] = "local-qwen3-runtime-v1"
+    config["output_dir"] = str(root.parent / "wrong-mode")
+    write_json(root.parent / "wrong-mode.json", config)
+    with pytest.raises(ValueError, match="optimization-agent-v1"):
+        run(root.parent / "wrong-mode.json", sampler_source=FakeHost())
 
 
 @pytest.mark.parametrize("finalized_run", ["\r\n"], indirect=True)

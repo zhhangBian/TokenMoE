@@ -51,6 +51,9 @@ def run(config_path, *, sampler_source=None):
     items = load_benchmark(dataset_path, config["instances"])
     engine_dir = Path(config["engine_dir"]).resolve()
     meta = json.loads((engine_dir / "engine_meta.json").read_text())
+    metadata_only = meta.get("capture_mode") == "metadata-only"
+    if metadata_only and config.get("collection_profile") != "optimization-agent-v1":
+        raise ValueError("Metadata-only engines require collection_profile: optimization-agent-v1")
     mini = (
         load_yaml(path.parent / config["mini_config"])
         if config.get("mini_config")
@@ -67,10 +70,10 @@ def run(config_path, *, sampler_source=None):
     write_json(root / "runtime_preflight.json", runtime_check)
     write_json(root / "run_config.json", config)
     write_json(root / "model_config.json", model)
-    write_json(
-        root / "engine_source.json",
-        {"path": str(engine_dir), "engine_instance_id": meta["engine_instance_id"]},
-    )
+    engine_source = {"path": str(engine_dir), "engine_instance_id": meta["engine_instance_id"]}
+    if metadata_only:
+        engine_source["capture_mode"] = "metadata-only"
+    write_json(root / "engine_source.json", engine_source)
     static = write_static(root, config, model, engine_dir, items, mini)
     group = new_id("grp")
     live = {}
