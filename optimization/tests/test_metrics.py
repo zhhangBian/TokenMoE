@@ -231,6 +231,20 @@ def test_agent_metrics_exclude_warmup_and_keep_failures_and_actual_dependency_jo
     assert result["observed_output_tokens_per_second"] == pytest.approx(2 / (900 / 1e9))
     assert result["benchmark_solved_tasks_per_second"] is None
     assert result["side_channel_export_complete"] is False
+    assert result["controller_cycles"]["cpu_seconds"] is None
+
+
+def test_controller_cpu_counts_every_complete_cycle_without_interpolating_boundaries(agent_trial):
+    path = agent_trial / "controller/cycles.jsonl"
+    path.parent.mkdir()
+    rows = [
+        {"started_at": 50, "finished_at": 150, "cpu_ns": 10, "wall_ns": 100},
+        {"started_at": 200, "finished_at": 300, "cpu_ns": 20, "wall_ns": 100},
+        {"started_at": 900, "finished_at": 1100, "cpu_ns": 30, "wall_ns": 200},
+    ]
+    path.write_text("".join(json.dumps({**r, "clock_domain_id": "clock"}) + "\n" for r in rows))
+    result = measure(agent_trial)["controller_cycles"]
+    assert result["count"] == 1 and result["cpu_seconds"] == 20 / 1e9
 
 
 def test_agent_metrics_reject_mixed_warmup_and_incomparable_clocks(agent_trial):

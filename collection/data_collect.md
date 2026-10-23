@@ -99,6 +99,8 @@ Windowed optimization metrics track the cohort of prefetches admitted inside tha
 
 Cache configuration and worker snapshots additionally identify `prefill_execution` and `max_route_pairs`. The optional expert-major prefill path records one demand/readiness group per capacity-fitting expert tile, retains pins through every route-pair chunk, and counts actual `route_pairs` and `route_pair_chunks`. Its group count has a different interpretation from token microbatches and must be read with the execution identity. The original token/phase feedback remains in original request-position order. Route-output scratch is explicit in the rank budget; correctness and cost profiles for the two execution modes are separate.
 
+Controller `cycles.jsonl` records every loop body with common-clock start/end, wall and process-CPU nanoseconds, plan emission and actual running/waiting counts. Metrics include only complete cycles inside the measured window and expose missing legacy observations as null. Process CPU through loop completion includes startup/source validation; final cancellation and output bookkeeping are outside that observation.
+
 ```text
 model_profile_id
 model_id, revision_hash, architecture

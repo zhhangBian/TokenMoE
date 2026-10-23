@@ -41,6 +41,8 @@ The experimental `prefill_execution=expert-major` mode is default-off and requir
 
 `compare-agents --trial PILOT METRICS-DIR --trial OTHER-PILOT OTHER-METRICS-DIR --output NEW-DIR` writes descriptive cells and checks sampling/KV/graph, devices, tasks, runtime sources, frozen protocols, complete exports and repetition coverage. It verifies that trial metadata still matches the metric extraction hashes. It does not infer a rotated matrix from a collection of pilot directories or publish a paired speed ratio; those comparisons remain unqualified until the complete matrix is verified.
 
+Controllers export every loop body's wall/process-CPU duration in `controller/cycles.jsonl`, including cycles that produce no plan. `agent-metrics` aggregates complete cycles inside the measured window and excludes boundary overlaps without interpolation. Startup/source-validation CPU time is reported separately through loop completion. Older pilots lack these observations; their plan-producing wall-time samples remain explicitly limited to that scope.
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py

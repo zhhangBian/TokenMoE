@@ -50,6 +50,7 @@ def run(
 ):
     if duration <= 0 or not 0.02 <= interval <= 1:
         raise ValueError("Positive controller duration and a 0.02..1 second interval are required")
+    lifetime_wall, lifetime_cpu = time.monotonic_ns(), time.process_time_ns()
     predictor = load_predictor(predictor_path)
     inputs = read_manifest(inputs_path, "input")
     cost = read_manifest(cost_path, "cost-profile")
@@ -108,9 +109,13 @@ def run(
         }
 
     try:
-        with JsonlWriter(out.path / "plans.jsonl") as writer:
+        with (
+            JsonlWriter(out.path / "plans.jsonl") as writer,
+            JsonlWriter(out.path / "cycles.jsonl") as cycles,
+        ):
             while not stop.is_set() and time.monotonic() - started < duration:
                 cycle = time.monotonic_ns()
+                cpu = time.process_time_ns()
                 snapshots = [
                     json.loads(path.read_text())
                     for path in sorted(Path(workers).glob("rank-*.state.json"))
@@ -168,6 +173,19 @@ def run(
                             "controller_wall_ns": time.monotonic_ns() - cycle,
                         }
                     )
+                finished = time.monotonic_ns()
+                cycles.write(
+                    {
+                        "started_at": cycle,
+                        "finished_at": finished,
+                        "clock_domain_id": controller.sessions.clock_domain,
+                        "cpu_ns": time.process_time_ns() - cpu,
+                        "wall_ns": finished - cycle,
+                        "planned": decision is not None,
+                        "running_requests": len(controller.running),
+                        "waiting_requests": len(controller.waiting),
+                    }
+                )
                 stop.wait(max(0, interval - (time.monotonic_ns() - cycle) / 1e9))
         out.finish(
             evidence="live-controller-diagnostic",
@@ -176,6 +194,8 @@ def run(
             active_plan_policy="original lease expires; fresh idle prediction required to renew",
             delivered_rank_plans=sends,
             rejected_training_sessions=sorted(controller.rejected_sessions),
+            process_cpu_seconds=(time.process_time_ns() - lifetime_cpu) / 1e9,
+            process_wall_seconds=(time.monotonic_ns() - lifetime_wall) / 1e9,
             policy_comparison_status="unqualified: held-out controlled service evaluation outstanding",
         )
         return out.path

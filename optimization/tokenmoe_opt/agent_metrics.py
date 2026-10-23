@@ -213,6 +213,21 @@ def measure(directory):
     controller = [row for row in read_jsonl(plans)] if plans.exists() else []
     if window is not None:
         controller = [r for r in controller if started <= r["created_at"] <= ended]
+    cycle_path = outer / "controller/cycles.jsonl"
+    cycles = list(read_jsonl(cycle_path)) if cycle_path.exists() else []
+    if any(c["clock_domain_id"] not in clocks for c in cycles):
+        raise ValueError("Controller cycles use another observation clock")
+    if any(
+        c["finished_at"] < c["started_at"]
+        or c["wall_ns"] != c["finished_at"] - c["started_at"]
+        or min(c["cpu_ns"], c["wall_ns"]) < 0
+        for c in cycles
+    ):
+        raise ValueError("Invalid controller cycle duration")
+    if window is not None:
+        cycles = [c for c in cycles if started <= c["started_at"] <= c["finished_at"] <= ended]
+    controller_manifest = outer / "controller/manifest.json"
+    lifetime = json.loads(controller_manifest.read_text()) if controller_manifest.exists() else {}
     statuses = [p.with_suffix(".status.json") for p in outer.glob("observations/*/*.jsonl")]
     statuses.extend(
         p.with_name("control_export_status.json")
@@ -259,6 +274,16 @@ def measure(directory):
         "controller_wall_seconds": distribution(
             [r["controller_wall_ns"] / 1e9 for r in controller if "controller_wall_ns" in r]
         ),
+        "controller_wall_scope": "cycles producing a plan; does not include every controller cycle",
+        "controller_cycles": {
+            "count": len(cycles),
+            "cpu_seconds": sum(c["cpu_ns"] for c in cycles) / 1e9 if cycles else None,
+            "wall_seconds": distribution([c["wall_ns"] / 1e9 for c in cycles]),
+            "scope": "complete cycles inside the measured window; overlapping boundary cycles excluded",
+            "reason": None if cycles else "No complete controller cycle observations",
+        },
+        "controller_lifetime_cpu_seconds": lifetime.get("process_cpu_seconds"),
+        "controller_lifetime_scope": "process through loop completion including startup/source validation; final cancellation/write excluded",
         "observer_status": observer_status,
         "side_channel_export_complete": bool(exported) if observer_status else None,
         "metrics": {
