@@ -49,6 +49,8 @@ Controllers export every loop body's wall/process-CPU duration in `controller/cy
 
 `tools-report` independently verifies the complete captures, original hashes, frozen collector snapshot and cleanup state. `tools-eval-plan --corpus VALIDATED-VIEW --output NEW-PLAN` freezes generic stream features, grouped held-task evaluation and runtime/uncertainty metrics; `tools-evaluate --protocol NEW-PLAN/protocol.json --output NEW-RESULT` scores only collector-visible prefixes. `tools-compare --evaluation NEW-RESULT --output NEW-PAIRED` compares jointly available scores on identical decisions, preserving missing forecasts and exploratory status. Controller receipt delay and live prefetch benefit remain unmeasured.
 
+`tools-reader-plan` freezes a local checkpoint, observed-prefix prompts and resource gates. `optimization/scripts/qualify_log_reader.py` runs the isolated qualification before full quality comparison. The available 7B inline profile fails its latency/output-contract gates and remains undeployed; see [reader evidence](docs/log-reader-evidence.md).
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py
