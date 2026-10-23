@@ -5,6 +5,7 @@ from tokenmoe_collect.jsonl import write_json
 from tokenmoe_collect.static import load_benchmark
 
 from tokenmoe_opt.tool_corpus import coverage, regression_targets, validate_case
+from tokenmoe_opt.tool_progress_eval import score, snapshots
 
 
 def test_regression_targets_use_real_runner_labels_for_data_only_and_bare_test_patches():
@@ -92,6 +93,25 @@ def test_tool_censoring_excludes_cleanup_delay_and_does_not_count_as_completion(
     checked = coverage([result] * 10, {"task_groups": 2, "completed_gt30_seconds": 1})
     assert not checked["passed"] and checked["actual"]["task_groups"] == 1
     assert checked["actual"]["completed_gt30_seconds"] == 0
+
+
+def test_progress_replay_reads_only_bytes_available_at_the_checkpoint(case):
+    root, job, _ = case
+    row = validate_case(root, job)
+    loaded, _ = snapshots(row, [0.5, 2.0])
+    assert loaded["features"][0.5][0] == 0
+    assert loaded["features"][2.0][0] > 0
+    assert loaded["features"][2.0][1] > 0
+    predicted = {
+        "p10": 1,
+        "p50": 2,
+        "p90": 10,
+        "cdf": [(1, 0.5), (10, 0.9)],
+        "unresolved_tail_probability": 0.1,
+    }
+    scored = score(predicted, row, 59, [0.5, 5])
+    assert scored["point_absolute_error_seconds"] is None
+    assert scored["brier_5s"] is None and scored["covered_80_interval"] is None
 
 
 @pytest.mark.parametrize("invalid", ["gap", "future", "clock", "loss"])

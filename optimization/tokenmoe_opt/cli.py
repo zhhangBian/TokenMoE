@@ -107,8 +107,23 @@ def main(argv=None):
     tool_report = commands.add_parser("tools-report")
     for name in ("corpus", "protocol", "source-snapshot", "output"):
         tool_report.add_argument("--" + name, type=Path, required=True)
+    progress_plan = commands.add_parser("tools-eval-plan")
+    progress_plan.add_argument("--corpus", type=Path, required=True)
+    progress_plan.add_argument("--output", type=Path, required=True)
+    progress_eval = commands.add_parser("tools-evaluate")
+    progress_eval.add_argument("--protocol", type=Path, required=True)
+    progress_eval.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command in {"tools-eval-plan", "tools-evaluate"}:
+        from .tool_progress_eval import evaluate, freeze
+
+        print(
+            freeze(args.corpus, args.output, command=command)
+            if args.command == "tools-eval-plan"
+            else evaluate(args.protocol, args.output, command=command)
+        )
+        return
     if args.command == "tools-report":
         from .tool_corpus import report
 
