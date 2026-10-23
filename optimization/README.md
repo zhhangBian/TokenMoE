@@ -45,6 +45,8 @@ Read [expert-major evidence](docs/expert-major-evidence.md) for its TP2 C64 dema
 
 Controllers export every loop body's wall/process-CPU duration in `controller/cycles.jsonl`, including cycles that produce no plan. `agent-metrics` aggregates complete cycles inside the measured window and excludes boundary overlaps without interpolation. Startup/source-validation CPU time is reported separately through loop completion. Older pilots lack these observations; their plan-producing wall-time samples remain explicitly limited to that scope.
 
+`tools-plan` and `tools-collect` create a separate real test/build stream corpus using explored task images, official test patches, explicit resource/deadline/coverage minima and byte-validated observations. They do not create routing datasets or claim agent task success. Read [long-tool evidence](docs/long-tool-evidence.md) for the frozen command groups, failure handling and outstanding progress-model evaluation.
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py

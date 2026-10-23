@@ -24,7 +24,9 @@ def load_yaml(path):
     return data
 
 
-def load_benchmark(path, instances):
+def load_benchmark(path, instances, *, columns=None):
+    if columns is not None and "instance_id" not in columns:
+        raise ValueError("Benchmark column selection must include instance_id")
     path = Path(path)
     if path.suffix == ".jsonl":
         from .jsonl import read_jsonl
@@ -38,14 +40,23 @@ def load_benchmark(path, instances):
         files = [path] if path.is_file() else sorted(path.rglob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"No benchmark parquet found under {path}")
-        items = [row for file in files for row in pq.read_table(file).to_pylist()]
+        items = [
+            row
+            for file in files
+            for row in pq.read_table(
+                file, columns=columns, filters=[("instance_id", "in", list(instances))]
+            ).to_pylist()
+        ]
     by_id = {row["instance_id"]: row for row in items}
     missing = sorted(set(instances) - by_id.keys())
     if missing:
         raise ValueError(f"Unknown benchmark instance IDs: {missing}")
     if len(set(instances)) != len(instances):
         raise ValueError("Duplicate benchmark instance IDs in run config")
-    return [by_id[i] for i in instances]
+    return [
+        {key: by_id[i][key] for key in columns} if columns is not None else by_id[i]
+        for i in instances
+    ]
 
 
 def minisweagent_config():

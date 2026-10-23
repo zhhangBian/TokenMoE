@@ -98,8 +98,23 @@ def main(argv=None):
     calibration = commands.add_parser("calibrate")
     for name in ("run", "cost-profile", "protocol", "output"):
         calibration.add_argument("--" + name, type=Path, required=True)
+    tool_plan = commands.add_parser("tools-plan")
+    tool_plan.add_argument("--dataset", type=Path, required=True)
+    tool_plan.add_argument("--output", type=Path, required=True)
+    tool_collect = commands.add_parser("tools-collect")
+    tool_collect.add_argument("--protocol", type=Path, required=True)
+    tool_collect.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command in {"tools-plan", "tools-collect"}:
+        from .tool_corpus import collect, freeze
+
+        print(
+            freeze(args.dataset, args.output, command=command)
+            if args.command == "tools-plan"
+            else collect(args.protocol, args.output, command=command)
+        )
+        return
     if args.command == "compare-agents":
         from .agent_compare import summarize
 

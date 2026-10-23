@@ -48,6 +48,7 @@ import tokenmoe_opt.control_run, tokenmoe_opt.controller, tokenmoe_opt.costs, to
 import tokenmoe_opt.agent_metrics
 import tokenmoe_opt.replay_cache, tokenmoe_opt.timing, tokenmoe_opt.calibration
 import tokenmoe_opt.agent_compare
+import tokenmoe_opt.tool_corpus
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 

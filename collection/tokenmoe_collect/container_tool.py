@@ -33,7 +33,10 @@ def terminate(path):
     while True:
         members = [process(p.name) for p in Path("/proc").iterdir() if p.name.isdigit()]
         if not any(p is not None and p[2] == str(pid) and p[0] != "Z" for p in members):
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
             return True
         if time.monotonic() >= deadline:
             return False
