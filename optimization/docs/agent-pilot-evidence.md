@@ -44,8 +44,10 @@ token observer wrote its final status. The raw per-request observations are
 retained, but the missing `token-readiness.status.json` makes complete side-channel
 export unverified. The metric output reports that status explicitly as missing.
 Future runs give the API a 30-second shutdown deadline and signal the API parent
-first; forced group termination remains a bounded fallback. A live shutdown check
-is required before treating subsequent cells as complete exports.
+first; forced group termination remains a bounded fallback. The separate
+`qwen-api-shutdown-20261023-v1` live check passed in 5.877 s with 19 ordered
+events, complete flush, zero drops/errors, no forced group cleanup and no
+remaining owned child processes.
 
 `tokenmoe-opt agent-metrics --run RUN --output NEW-DIR` reads the unchanged
 harness records from a metadata-only pilot or a finalized historical collection.
@@ -68,3 +70,20 @@ wait endpoints are not summed into a fictitious exposed stall.
 The qualification entry point accepts saved prompt token IDs, larger scheduled
 batches, model context and slot capacities so the real agent prefix can receive
 a matching forced-tensor check and copy calibration before cached policy trials.
+
+`qwen-agent-prefix-native-tp2-20261023-v1` and
+`qwen-agent-prefix-c64-tp2-20261023-v1` use the same 1,472-token captured first-turn
+prefix under the formal 32K/4K/8-GiB settings. The fixed-input tensor gate in
+`qwen-agent-prefix-tensors-20261023-v1` passes all 288 rank/layer/frame files,
+with zero router differences and equal greedy tokens. Three warm-prefix short
+trials took 0.580/0.579/0.490 s natively and 1.843/1.993/2.020 s with 64 slots.
+These eight-output-token checks do not replace agent comparisons.
+
+The first detailed 64-slot trace reported 1,737 dropped events on rank 0 and 947
+on rank 1 out of 563,339 produced events per rank. Cost fitting correctly rejects
+this loss, even though tensor correctness passes. The failed fit remains at
+`qwen-agent-prefix-costs-20261023-v1`. The writer's per-event flush is replaced
+by bounded batches of at most 64 records with a 10-ms idle flush target, keeping
+the 4,096-item admission bound and nonblocking drop behavior. Writer parameters
+are exported with status and configuration. A fresh matched run must verify
+loss-free export before transfer calibration or cached policy qualification.
