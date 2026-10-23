@@ -2,19 +2,19 @@
 
 The implementing agent owns local setup, verification, and authorized runs. These unchecked tasks describe future implementation; authoring the specification does not execute them. Expansion milestones remain separate from local completion.
 
-- [ ] 1.1 Add the `optimization/` package and CPU-only command entry points for analysis, replay, and experiment planning; verify it can be imported without vLLM or GPU initialization.
-- [ ] 1.2 Define versioned input, split, predictor, cost-profile, and experiment manifests with model/template identities, source hashes, and explicit milestone status; reject accidental output-directory reuse.
-- [ ] 1.3 Extend `collection/data_collect.md` in the sections listed in the proposal for optional control/optimization artifacts, feature availability, cache events, and validation, preserving historical collection contracts.
-- [ ] 1.4 Freeze the local evaluation protocol: task groups, exploration versus untouched confirmation data, budgets, N1/N4, TP, KV/graph modes, warmup, at least three measured repetitions, latency targets, and task-outcome handling.
+- [x] 1.1 Add the `optimization/` package and CPU-only command entry points for analysis, replay, and experiment planning; verify it can be imported without vLLM or GPU initialization.
+- [x] 1.2 Define versioned input, split, predictor, cost-profile, and experiment manifests with model/template identities, source hashes, and explicit milestone status; reject accidental output-directory reuse.
+- [x] 1.3 Extend `collection/data_collect.md` in the sections listed in the proposal for optional control/optimization artifacts, feature availability, cache events, and validation, preserving historical collection contracts.
+- [x] 1.4 Freeze the local evaluation protocol: task groups, exploration versus untouched confirmation data, budgets, N1/N4, TP, KV/graph modes, warmup, at least three measured repetitions, latency targets, and task-outcome handling.
 
 ## 2. Demand analysis and reproducible evidence
 
-- [ ] 2.1 Implement validated trace ingestion and phase histograms using actual positions/layers; verify cached gaps, partial requests, the uncomputed final sampled token, pre-engine rejection, and explicit recompute accounting.
-- [ ] 2.2 Implement grouped outer splits and training-only inner tuning; verify that N1/N4/pilot/recovery copies cannot cross splits and that online adaptation cannot read future observations.
-- [ ] 2.3 Implement versioned causal features, independent first/no-tool/multiple-tool states, and conservative historical receipt proxies; audit representative compound shell commands and preserve label-rule versions.
-- [ ] 2.4 Implement global/stage/previous/EWMA and recent-window baselines plus global-, stage-, and tool-smoothed histories, sparse-key backoff, deterministic ranking, and model-specific predictor artifacts.
-- [ ] 2.5 Implement budget curves, phase/first-32-decode targets, layer/transition subgroups, task-macro and lookup-weighted summaries, task uncertainty, and explicitly labeled fixed-set hindsight results.
-- [ ] 2.6 Reproduce the exploratory Qwen comparison in a separate output directory, explain differences, and deliver the agent-feature increments over both history+global and history+stage; retain small or negative effects.
+- [x] 2.1 Implement validated trace ingestion and phase histograms using actual positions/layers; verify cached gaps, partial requests, the uncomputed final sampled token, pre-engine rejection, and explicit recompute accounting.
+- [x] 2.2 Implement grouped outer splits and training-only inner tuning; verify that N1/N4/pilot/recovery copies cannot cross splits and that online adaptation cannot read future observations.
+- [x] 2.3 Implement versioned causal features, independent first/no-tool/multiple-tool states, and conservative historical receipt proxies; audit representative compound shell commands and preserve label-rule versions.
+- [x] 2.4 Implement global/stage/previous/EWMA and recent-window baselines plus global-, stage-, and tool-smoothed histories, sparse-key backoff, deterministic ranking, and model-specific predictor artifacts.
+- [x] 2.5 Implement budget curves, phase/first-32-decode targets, layer/transition subgroups, task-macro and lookup-weighted summaries, task uncertainty, and explicitly labeled fixed-set hindsight results.
+- [x] 2.6 Reproduce the exploratory Qwen comparison in a separate output directory, explain differences, and deliver the agent-feature increments over both history+global and history+stage; retain small or negative effects.
 
 ## 3. CPU storage and cache state
 

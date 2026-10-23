@@ -17,6 +17,8 @@
 
 The local Qwen collection protocol is defined in §11. It preserves actual model/tool behavior and accepts complete failure traces independently of task correctness. The executing agent owns authorized local preparation, GPU execution, fault repair, and recovery.
 
+Optional residency research lives in `optimization/`; GPU execution lives in the vLLM fork. `tokenmoe-opt analyze` reads finalized captures without rewriting validation, labels, or routing. Lookup analysis, frozen cache replay, calibrated timing simulation, and live measurements are separate evidence levels. Control events and cache enablement are independent of full routing capture.
+
 1. Router 不变。只记录 router 的真实选择，不训练或替换 router。
 2. prefix caching 开启。只保存本请求实际计算的路由，不重新暴露命中前缀的历史路由。`num_cached_tokens` 固定为首次调度的起始 token 位置；后续更长缓存命中造成的非连续区间用 token_positions 表示。抢占后重复计算标为 `recompute`，路由保留首次计算结果。
 3. decode 路由必采。采集使用真实生成，不使用 `max_tokens=1` 的 prompt-only 模式。最后一个采样 token 没有路由，属正常现象。
@@ -58,13 +60,15 @@ clock_sync:
   round_trip_ms
 ```
 
-预测时能否使用某个特征，只看它的 `available_at` 或事件时间是否不晚于预测时刻；写入日志的时间只用于诊断。
+Live optimization features require comparable source and controller receipt clocks and `available_at = max(source_observed_at, receipt_at) <= decision_at`. Historical data has no measured controller receipt: the consuming request's creation time is a conservative upper-bound proxy, explicitly labeled in derived features. Finalized `issued_at` alone cannot establish live command availability.
 
 ## 3. 静态信息
 
 静态信息由实验启动器保存，运行时记录只引用其 ID。所有静态对象不可变、带版本或 hash。
 
 ### 3.1 Experiment Config
+
+Optimization manifests use `schema_version=1`, `kind`, exact model/weight/tokenizer/template `identity`, source-file SHA-256, code revision and dirty-source hashes, command, and separate milestone states. Input, split, predictor, cost-profile and experiment manifests remain outside source captures. Experiment protocols freeze task groups, exploratory/confirmation status, sampling, TP/device mapping, concurrency, expert bytes including reserves, KV/graph modes, warmup, repetitions, latency targets and outcome handling before live measurement. An output directory must be new; failed runs retain their manifest and diagnostics.
 
 Local experiments additionally record `collection_profile`, `protocol_id`, and `source_manifest_ref` when supplied. The source manifest records repository/fork commits and patch hashes, collector source-file hashes, model index/header and tokenizer hashes, dataset hashes, environment versions/import paths, actual GPU UUIDs/free memory, and disk capacity. Unknown dataset revisions remain `unknown` with content hashes retained.
 
@@ -84,6 +88,8 @@ seed
 ```
 
 ### 3.2 Model Profile
+
+Measured cost profiles additionally identify device UUIDs, TP shard bytes, setup/copy duration, bandwidth, concurrency/contention, compute samples, fitting groups and excluded calibration groups. Shape-derived bytes and assumed bandwidth are diagnostic inputs and cannot qualify a timing simulation. Predictors cannot share tables across weight, tokenizer, template or feature revisions.
 
 ```text
 model_profile_id
@@ -169,6 +175,8 @@ final_status                    succeeded/failed/cancelled/timeout
 
 ### 4.3 LLM Request
 
+Optional control events reference request IDs without modifying messages, prompts or responses. Predictions record `decision_at`, visible sequence, feature/label versions, clock domain and provenance. Engine host token-readiness records, when implemented, must carry output-token index, step and processing-batch identity; a nonstreaming client response does not establish individual token emission times. Unimplemented observation fields remain unavailable.
+
 HTTP retries retain the existing step/attempt identity rules. Server restarts and task recollection allocate new application/session/request IDs; recovery events identify the previous execution, repair version, changed parameters, evidence, and verification result. Actual outgoing messages remain reconstructable from raw message deltas.
 
 HTTP error records preserve `http_status_code` and `http_error_response`. For the local profile, a structured HTTP 400 `BadRequestError` with `param` equal to `input_tokens` or `input_text` and an explicit maximum-context-length message can establish `engine_admission_status = rejected_before_engine` when there is no engine record or step entry. Keep the failed harness request and all raw messages; engine lifecycle/token/routing fields are null and no prompt/routing artifact is fabricated. Rules 6/7 validate the rejection evidence and absence of computation; rule 9 requires no invented engine prompt or segments. All ordinary missing engine records and all missing routing for admitted/computed requests still fail validation.
@@ -241,6 +249,8 @@ alignment_error                成功时为 null，定位失败时必填
 
 ### 4.5 Tool Call
 
+For optimization, category observation begins at `parsed_at` (or conservatively `started_at` when parsing was not recorded). Outcome observation begins at `finished_at`; neither can use a later outcome at issuance. Optional events describe known dependency IDs; completing one parallel tool does not resolve a pending join. First request, no preceding tool, multiple tools and unknown category are independent features.
+
 ```text
 tool_call_id
 llm_request_id_issuing          模型输出里包含这次调用的请求
@@ -263,6 +273,8 @@ spawned_session_id              spawn_agent 时填写
 `issued_at` 是内容预测发生的时刻，`finished_at` 是下一次请求的 prompt 才可能存在的时刻，两者之差就是可用的 lead time。`tool_type` 与 `outcome_class` 不在此处记录，见第 5 节。
 
 ### 4.6 Tool Output Chunk
+
+An optional live event may reference only the byte range already observed by the executor, with source sequence/time and separate controller receipt. Bounded side-channel loss requires a gap record and a conservative snapshot before resuming predictions. The raw byte stream and agent-visible observation remain authoritative.
 
 工具执行器以 stdout=PIPE、stderr=STDOUT（SWE-bench 使用 bash -c 和 BASH_ENV=/root/.bashrc） 合并管道 tee 原始输出流：
 
@@ -329,6 +341,8 @@ net_rx_bytes, net_tx_bytes
 
 ### 4.10 Cache 与搬运事件（系统实验阶段）
 
+Optimization event schema v1 requires engine/rank, ordered event sequence, policy/plan epoch, layer/logical expert, slot/generation, transfer ID, trigger, rank-local bytes, tiers, and nullable request/step attribution. Record demand before any miss wait. Load start/completion/failure, hit/miss, eviction and cancellation are distinct. Host enqueue, device copy duration and exposed readiness wait are distinct observations; unavailable measurements are null. Exact reconstruction requires complete initialization events or a resident/in-flight snapshot. Telemetry gaps invalidate exact replay coverage for the affected interval, without discarding inference outcomes. This contract does not claim that runtime export is already implemented.
+
 ```text
 cache_event_id
 transfer_id                     load_started 与 load_finished 配对
@@ -346,9 +360,13 @@ llm_request_id, step_id         可空；由聚合预测触发的搬运不归属
 
 ### 4.11 多角色应用的图事件（仅 G2）
 
+Optional optimization control events preserve source sequence and controller receipt, dependency joins, cancellation and terminal state. Future branches, output bytes and final outcomes cannot appear in earlier snapshots. G2 coverage still requires the paired workflows below.
+
 多角色应用另记只追加的图事件，用于恢复任意时刻预测器可见的图：`NODE_CREATED`（等价于 session 创建，附 `node_template_id` 或 `generation_rule_id`）、`EDGE_CREATED`、`EDGE_DEACTIVATED`、`BRANCH_DECIDED`（引用应用定义中的 `branch_rule_id` 与 `selected_outcome_id`）、节点生命周期事件。公共头部为 `event_id`、`application_run_id`、`event_sequence`、`event_time`、`graph_revision`、`caused_by_event_id`。每个 LLM Request 记录 `event_sequence_at_create`，离线代码不得读取更高序号的事件。未选择的分支只通过 branch outcome 表示，不伪造节点。
 
 ## 5. 离线派生标签
+
+Optimization `request-features-v2` retains `command-outcome-v1` for screening reproduction and adds `shell-command-v2` for executable-word compound labels. Quoted command payloads are not executable categories; unsupported heredocs/substitutions receive unknown. Historical labels remain unchanged. Conditional priors require eight training requests, otherwise global backoff. Same-session history becomes visible only after the preceding response; inner tuning uses only outer-training task groups. Ties use stable ascending expert IDs and take the final K entries. Empty targets have null metrics and a reason.
 
 Local labels under `derived/labels_v1/` include command-derived tool categories (`test`, `inspect`, `edit`, `build_or_install`, `unknown`), observed outcomes (`success`, `failure`, `timeout`, `unknown`), and first-step/tool-switch markers. Files record `rules_version`, category/outcome availability timestamps, request IDs, and tool IDs. Final outcomes are supervision unavailable at tool issuance. These labels are recomputable descriptive annotations; they do not implement a predictor.
 
@@ -361,6 +379,8 @@ Local labels under `derived/labels_v1/` include command-derived tool categories 
 - **需求直方图**：按 `(agent_template_id, tool_type, outcome_class, phase, layer)` 聚合的 expert 使用计数，是内容预测器的物化视图，可随时从路由记录重算。
 
 ## 6. 存储布局
+
+Optimization outputs default to new directories under `/home/youwei/bzh/dataset/tokenmoe_artifacts/`. Analysis writes `manifest.json`, `inputs.json`, `splits.json`, per-fold `predictors/`, `requests.jsonl`, `metrics.json`, `increments.json`, and `report.md`; protocol planning writes `protocol.json`. Source hashes are verified again after analysis. Cache/plan/control streams and calibration records belong to their own run, never historical capture directories.
 
 Local experiment roots additionally contain `collection_plan.json`, `collection_manifest.json`, `source_manifest.json`, per-stage `source_snapshots/`, `recovery_events.jsonl`, `health_checks.jsonl`, `latest_health_check.json`, stage logs/configurations, and `reports/runtime_summary.{json,md}` plus `reports/artifact_checksums.json`. Smoke/equivalence/tool-smoke/pilot/primary/overhead stages use separate directories and append new attempts rather than overwrite failures. Independent finalized run directories retain the layout below. Checksums deduplicate hashing by inode and record excluded mutable control/health paths; storage reports distinguish file bytes from allocated bytes.
 
@@ -409,6 +429,8 @@ finalize 保留 raw；路由、工具输出和原始工具参数文件硬链接�
 
 ## 7. 校验规则
 
+`validate(run_dir, write_report=False)` applies the original collection rules without replacing its report. Optimization adds comparable-clock/causal-availability checks and task-group isolation. Runtime event validation must additionally check transfer lifecycles, rank bytes, slot generations and readiness before use; incomplete/crashed transfers remain incomplete. Historical captures do not require cache telemetry.
+
 采集完成后必须通过：
 
 1. 各类 ID 不可混用；`session_id`、`llm_request_id`、`tool_call_id`、`step_id` 全局唯一。
@@ -429,6 +451,8 @@ finalize 保留 raw；路由、工具输出和原始工具参数文件硬链接�
 第一阶段实现规则 1–9、11、12；10、13、14 报告 not_applicable。validation.json 对每条规则给出状态、违规计数和最多 20 个例子 ID；任一适用规则失败时返回非零退出码。
 
 ### 7.1 实验验收
+
+Cache correctness uses a separate preregistered gate: fixed-input router equality, forced-token tensor tolerances, greedy sequence equality, repeat-baseline variability and startup/steady memory bounds. The historical capture gate's extra-one allowance does not apply to cache-induced differences. A failed cache configuration cannot support speedup claims. Equal graph/KV-mode comparisons and a native graph-enabled full-resident reference are required for accepted performance evidence.
 
 The local Qwen exception is explicit: submission-rate threshold defaults to 0; task correctness, failed tests, model format errors, and exhausted budgets do not independently reject a complete trace. Applicable structural rules 1–9, 11, and 12 still apply, including the real 50-prompt capture-equivalence gate. Rules 10/13/14 remain `not_applicable`. Local rendered-field alignment must be ≥99%, with original rates and proven omission counts disclosed. Missing accepted-request routing or corrupted files require repair/recollection. Benchmark scores stay null.
 
@@ -477,6 +501,8 @@ Local overhead is measured using fixed requests, identical serving parameters/de
 
 ### 8.2 采集矩阵
 
+Local residency protocol v1 plans N1/N4, TP1/TP2 (primary TP2), 16/32/64/96/128 slots, two excluded warmups and at least three measured repetitions with rotated policy order and paired task/seeds. Fixed-KV mechanism comparisons and fixed-total-memory service-capacity comparisons are separate. Long-tool, stream-predictor, multi-role and larger-model experiments require separately frozen coverage protocols and actual execution evidence.
+
 The local matrix is 3 Verified pilot tasks at N1 (10 steps/600 seconds each), followed by 20 fixed Verified tasks at N1 and N4 (20 steps/900 seconds each), yielding 40 primary planned units. Tool timeout is 60 seconds, HTTP timeout 600 seconds, retries 2, and containers use 2 CPU/4 GiB. Turn-boundary time checks are not hard deadlines. N4 is actual session concurrency, independent of TP; report measured overlap and batch composition. Pilot, smoke, and recovery duplicates do not increase primary coverage counts.
 
 ```text
@@ -504,9 +530,13 @@ Local profile `local-qwen3-runtime-v1` uses a separate Qwen configuration: BF16,
 
 ## 10. G1、G2、G3 切分规则
 
+All N1/N4/pilot/recovery copies of each task remain in one outer group. The 20 local Qwen tasks used during design are exploratory; untouched confirmation groups are still outstanding. A protocol file or an output directory does not satisfy workload coverage. G2/G3 retain their whole-workflow/template grouping and event-time visibility rules.
+
 Local G1 manifests group by benchmark item, keeping all N1/N4, pilot, and recovery copies of a task together. The local dataset contains one generalist role with bash tools; G2/G3 and unseen-tool generalization are explicitly not covered. Runtime reports describe observed demand and timing without claiming expert-cache, offload-stall, or end-to-end acceleration benefits.
 
 ## 11. Local Qwen execution and runtime reports
+
+The completed 2026-10-19 dataset is immutable historical evidence. New optimization results reference it by hashes and disclose changes in category/receipt semantics. Its short, one-role bash tools cannot qualify general stream-progress, multi-role, G2/G3 or larger-model results. Historical request endpoints do not measure cache waits, device transfer bandwidth or per-token delivery distributions.
 
 `collection/scripts/run_local.py` runs or resumes the local profile using explicit generated model, pilot, and primary configurations. `--dry-run` expands the plan without GPU, download, image-pull, or collection writes; `--check-only` reads current health. The supervisor keeps a single-experiment lock and records a health snapshot every 1,800 seconds during active execution. Snapshots include the active process identity/create time, liveness, completed coverage, and request-log sizes/modification times. Stage errors preserve diagnostics and mark the experiment `needs_repair`; the executing agent diagnoses and repairs the issue before resuming missing units.
 

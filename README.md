@@ -5,6 +5,7 @@
 - [研究思路](%23idea.md)
 - [数据采集规范](collection/data_collect.md)与 [collection/](collection/)：采集代码、配置、脚本与文档。
 - [vLLM fork](vllm/)：服务端路由捕获与引擎记录。
+- [optimization/](optimization/)：因果需求分析、驻留协议和缓存诊断。
 - [OpenSpec](openspec/)：变更设计和实施进度。
 
 数据集、模型权重和采集产物存放在仓库外。

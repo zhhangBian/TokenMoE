@@ -11,7 +11,7 @@ from .admission import is_context_rejection
 from .jsonl import read_jsonl, write_json
 
 
-def validate(run_dir):
+def validate(run_dir, *, write_report=True):
     root = Path(run_dir)
     runtime = root / "runtime"
     rules = {
@@ -297,5 +297,6 @@ def validate(run_dir):
             ):
                 fail(12, identifier)
     report = {"passed": all(row["status"] != "failed" for row in rules.values()), "rules": rules}
-    write_json(root / "validation.json", report)
+    if write_report:
+        write_json(root / "validation.json", report)
     return report

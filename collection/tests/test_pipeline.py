@@ -21,6 +21,13 @@ from tokenmoe_collect.validate import validate
 MODEL = Path("/home/youwei/bzh/model/Qwen/Qwen3-30B-A3B")
 
 
+def test_readonly_validation_preserves_source_report(finalized_run):
+    root, _, _ = finalized_run
+    before = (root / "validation.json").read_bytes()
+    assert validate(root, write_report=False)["passed"]
+    assert (root / "validation.json").read_bytes() == before
+
+
 class FakeHost:
     def sample(self):
         return dict(
