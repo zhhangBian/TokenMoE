@@ -37,6 +37,8 @@ The default-off Python cache and diagnostic commands are described in [backend e
 
 `optimization/scripts/run_agent_pilot.py` reuses the real collection launcher with explicit `optimization-agent-v1` metadata-only provenance, fixed warmup, measured boundaries and raw task outcomes. It accepts exploration tasks only and rejects overlap with predictor training groups. `agent-metrics --run PILOT --output NEW-DIR` extracts actual engine/client observations, failed outcomes, windowed transfer/resource data and whole-task uncertainty. These runs cannot be finalized as full routing datasets. Read [agent pilot evidence](docs/agent-pilot-evidence.md) for the real N1 run, its failed task outcome and the shutdown fault being repaired before controlled comparisons.
 
+`compare-agents --trial PILOT METRICS-DIR --trial OTHER-PILOT OTHER-METRICS-DIR --output NEW-DIR` writes descriptive cells and checks sampling/KV/graph, devices, tasks, runtime sources, frozen protocols, complete exports and repetition coverage. It verifies that trial metadata still matches the metric extraction hashes. It does not infer a rotated matrix from a collection of pilot directories or publish a paired speed ratio; those comparisons remain unqualified until the complete matrix is verified.
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py

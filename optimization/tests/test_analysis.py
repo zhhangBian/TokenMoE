@@ -46,7 +46,8 @@ import tokenmoe_opt.arrival_eval, tokenmoe_opt.planner, tokenmoe_opt.resources
 import tokenmoe_opt.session, tokenmoe_opt.validation
 import tokenmoe_opt.control_run, tokenmoe_opt.controller, tokenmoe_opt.costs, tokenmoe_opt.metrics
 import tokenmoe_opt.agent_metrics
-import tokenmoe_opt.replay_cache, tokenmoe_opt.timing
+import tokenmoe_opt.replay_cache, tokenmoe_opt.timing, tokenmoe_opt.calibration
+import tokenmoe_opt.agent_compare
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 

@@ -2,10 +2,40 @@ import json
 
 import pytest
 
+from tokenmoe_opt.agent_compare import preconditions
 from tokenmoe_opt.agent_metrics import measure, task_uncertainty
 from tokenmoe_opt.artifacts import manifest
 from tokenmoe_opt.costs import fit
 from tokenmoe_opt.metrics import Transfers, resource_metrics, token_metrics
+
+
+def test_pilot_comparison_preserves_missing_repeats_sources_and_export_gates():
+    base = dict(
+        identity="q",
+        configuration="c",
+        runtime_sources="code",
+        fork_files_hashed=True,
+        devices=["gpu"],
+        tasks=["task"],
+        concurrency=1,
+        protocol="p",
+        side_channel_complete=True,
+        source_stable=True,
+        slots=64,
+    )
+    rows = [
+        {**base, "policy": policy, "repetition": i}
+        for policy in ("full", "previous+tool")
+        for i in range(3)
+    ]
+    checks = preconditions(rows, 3)
+    assert all(passed for key, passed in checks.items() if key != "rotated_order_matrix_verified")
+    assert not checks["rotated_order_matrix_verified"]
+    rows[0]["side_channel_complete"] = False
+    rows[1]["runtime_sources"] = "different"
+    checks = preconditions(rows[:-1], 3)
+    assert not checks["complete_repetitions"]
+    assert not checks["complete_side_channels"] and not checks["same_runtime_sources"]
 
 
 def test_token_metrics_preserve_batch_resolution_and_separate_endpoint_tpot():

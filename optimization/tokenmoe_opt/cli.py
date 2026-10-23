@@ -72,6 +72,11 @@ def main(argv=None):
     agent_metrics = commands.add_parser("agent-metrics")
     agent_metrics.add_argument("--run", type=Path, required=True)
     agent_metrics.add_argument("--output", type=Path, required=True)
+    comparison = commands.add_parser("compare-agents")
+    comparison.add_argument(
+        "--trial", type=Path, nargs=2, action="append", required=True, metavar=("RUN", "METRICS")
+    )
+    comparison.add_argument("--output", type=Path, required=True)
     replay_parser = commands.add_parser("replay")
     replay_parser.add_argument("--demands", type=Path, required=True)
     replay_parser.add_argument("--cost-profile", type=Path, required=True)
@@ -94,6 +99,11 @@ def main(argv=None):
         calibration.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command == "compare-agents":
+        from .agent_compare import summarize
+
+        print(summarize(args.trial, args.output, command=command))
+        return
     if args.command == "calibrate":
         from .calibration import validate_run
 
