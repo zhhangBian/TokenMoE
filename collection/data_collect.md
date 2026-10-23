@@ -91,6 +91,8 @@ seed
 
 Measured cost profiles additionally identify device UUIDs, TP shard bytes, setup/copy duration, bandwidth, concurrency/contention, compute samples, fitting groups and excluded calibration groups. Shape-derived bytes and assumed bandwidth are diagnostic inputs and cannot qualify a timing simulation. Predictors cannot share tables across weight, tokenizer, template or feature revisions.
 
+Cache observer configuration optionally records `mapping_mode=host-resolved`. This mode resolves physical slots from the authoritative host routes, has zero persistent GPU mapping bytes, and uses bounded transient route tensors within execution scratch. Older streams omit the field and retain the 128-entry int64 device-table accounting. Host pinned staging accounting refers to persistent expert-weight staging; transient route-copy buffers use PyTorch's pinned allocator. Runtime counters `tp_control_ns` and `physical_ids_prepare_ns` measure host preparation intervals and can overlap device work.
+
 ```text
 model_profile_id
 model_id, revision_hash, architecture

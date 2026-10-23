@@ -1,5 +1,7 @@
 import copy
 
+import pytest
+
 from tokenmoe_opt.validation import validate_cache_events, validate_features
 
 
@@ -103,13 +105,15 @@ def test_serialized_events_may_have_delayed_independent_observation_times():
     assert not validate_cache_events(rows, status=status())["passed"]
 
 
-def test_cache_memory_reconstruction_checks_layout_and_rank_scratch_budget():
+@pytest.mark.parametrize("mapping_mode", ["device-table", "host-resolved"])
+def test_cache_memory_reconstruction_checks_layout_and_rank_scratch_budget(mapping_mode):
     rows = events()
+    mapping_bytes = 1024 if mapping_mode == "device-table" else 0
     rows[0]["memory"] = {
         "host_pageable_bytes": 128 * 1024,
         "resident_bytes": 1024,
         "host_pinned_staging_bytes": 1024,
-        "mapping_bytes": 1024,
+        "mapping_bytes": mapping_bytes,
         "gpu_staging_bytes": 0,
     }
     rows.append(
@@ -119,14 +123,18 @@ def test_cache_memory_reconstruction_checks_layout_and_rank_scratch_budget():
             "event_id": "config",
             "sequence": 7,
             "mode": "detailed",
-            "budget_bytes_per_rank": 2112,
+            "budget_bytes_per_rank": 1088 + mapping_bytes,
             "scratch_bytes": 64,
+            "mapping_mode": mapping_mode,
         }
     )
+    rows.insert(0, rows.pop())
+    for i, row in enumerate(rows, 1):
+        row["sequence"] = i
     assert validate_cache_events(rows, status=status())["passed"]
-    rows[-1]["budget_bytes_per_rank"] -= 1
+    rows[0]["budget_bytes_per_rank"] -= 1
     assert not validate_cache_events(rows, status=status())["passed"]
-    del rows[0]["memory"]["resident_bytes"]
+    del rows[1]["memory"]["resident_bytes"]
     assert "invalid byte accounting" in " ".join(
         validate_cache_events(rows, status=status())["errors"]
     )

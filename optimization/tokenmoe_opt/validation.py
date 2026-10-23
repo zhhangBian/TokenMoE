@@ -29,7 +29,7 @@ def validate_features(records):
 
 def validate_cache_events(records, *, status=None, expected_layers=None, checkpoint_at=None):
     slots, transfers, sequences, clocks = {}, {}, {}, {}
-    engine_clocks = {}
+    engine_clocks, mapping_modes = {}, {}
     budgets, memory = {}, defaultdict(dict)
     uncertain, initialized, event_ids = set(), defaultdict(set), set()
     errors, reasons = [], []
@@ -60,6 +60,10 @@ def validate_cache_events(records, *, status=None, expected_layers=None, checkpo
             uncertain.add(stream)
             reasons.append(f"{stream}: event gap before {sequence}")
         sequences[stream] = sequence
+        if kind == "observer_config":
+            mapping_modes[stream] = event.get("mapping_mode", "device-table")
+            if mapping_modes[stream] not in {"device-table", "host-resolved"}:
+                fail("unsupported logical-to-slot mapping mode")
         clock = event["clock_domain_id"]
         if stream in clocks and clocks[stream] != clock:
             fail("incomparable clocks")
@@ -98,7 +102,8 @@ def validate_cache_events(records, *, status=None, expected_layers=None, checkpo
                         or not expert_bytes
                         or values["resident_bytes"] != expert_bytes * len(slot_ids)
                         or values["host_pinned_staging_bytes"] != expert_bytes
-                        or values["mapping_bytes"] != 128 * 8
+                        or values["mapping_bytes"]
+                        != (0 if mapping_modes.get(stream) == "host-resolved" else 128 * 8)
                     ):
                         fail("resident/staging/mapping byte accounting differs from expert layout")
                     memory[stream][layer] = values
