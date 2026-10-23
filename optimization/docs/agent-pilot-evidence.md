@@ -85,5 +85,49 @@ this loss, even though tensor correctness passes. The failed fit remains at
 `qwen-agent-prefix-costs-20261023-v1`. The writer's per-event flush is replaced
 by bounded batches of at most 64 records with a 10-ms idle flush target, keeping
 the 4,096-item admission bound and nonblocking drop behavior. Writer parameters
-are exported with status and configuration. A fresh matched run must verify
-loss-free export before transfer calibration or cached policy qualification.
+are exported with status and configuration.
+
+The repeated pair `qwen-agent-prefix-{native,c64}-tp2-20261023-v2` freezes root
+`c64e1c5` and fork `71d35f96bf` in source worktree v3. Each rank exported all
+563,339 events with zero drops/errors and complete flush. The matching tensor
+report passes all 288 files with zero router differences and equal greedy tokens.
+Native short trials took 0.467/0.469/0.500 s; cached trials took
+1.625/2.006/1.992 s. `qwen-agent-prefix-costs-20261023-v2` records these measured
+costs with exact model/config/device identities and native-service geometry.
+
+The real demand-LRU64 N1 run `qwen-agent-pilot-lru64-n1-20261023-v1` used that
+loss-free source and cost profile. Its metrics are in
+`qwen-agent-pilot-lru64-n1-metrics-20261023-v1`. All ten requests completed at
+the transport level; the task ended with `timeout/TimeExceeded`, without a
+submission or benchmark score. All side channels flushed without loss.
+
+| Observed value | LRU64 eager pilot |
+|---|---:|
+| Engine TTFT p95 | 23.5589 s (10 requests) |
+| Required-tool completion to complete client response p95 | 97.6936 s (9 requests) |
+| Endpoint average TPOT p50 | 0.20423 s/token |
+| Measured window | 993.3943 s |
+| Sampled measured GPU peaks, rank 0 / rank 1 | 27,510,571,008 / 27,470,725,120 bytes |
+| Measured demand-copy bytes per rank | 663,089,577,984 bytes |
+| Demand-recovery time, rank 0 / rank 1 | 282.0470 / 282.2645 s |
+| Router-to-host synchronization, rank 0 / rank 1 | 54.3370 / 41.6156 s |
+
+This uses about 35% less sampled GPU memory than the native pilot and fails
+both the 1-second TTFT and 30-second complete-response targets. One task and one
+repetition, with different generated trajectories, cannot establish a paired
+task speed ratio or agent-feature gain. Recovery, copy and synchronization
+intervals can overlap and must not be summed as independent exposed stalls.
+
+The separate preregistration `qwen-timing-calibration-protocol-20261023-v1`
+freezes source hashes and a held-out fixed-input run before measurement. The run
+`qwen-agent-prefix-c64-tp2-20261023-v3` has no tensor probes and is excluded from
+cost fitting. The report `qwen-timing-calibration-20261023-v2` reconstructs the
+closed N1 warmup state and reproduces 1,727,004,672 transferred bytes, 28,914
+unique-demand hits, 366 misses, 366 evictions, 366 reloads and 1,155 logical
+microbatches, each with zero absolute error. Service predictions of
+0.491/0.493/0.524 s undershoot observed 1.789/1.798/1.627 s. Median relative
+error is 72.5580% and p95 error 72.5732%, exceeding the preregistered 20%/30%
+limits. The fixed-input service gate fails; full-workflow timing remains
+unqualified. Cache-specific host/control costs require further measurement.
+The failed v1 adapter run is retained separately; its treatment of internal
+warmup request IDs was corrected without changing the frozen timing model.

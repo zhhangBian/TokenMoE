@@ -88,6 +88,7 @@ def run(
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     tails, last, snapshots = Tails(), None, []
     engine_id, decisions, sends = None, 0, 0
+    ready = False
     started = time.monotonic()
 
     def send(decision):
@@ -134,11 +135,20 @@ def run(
                     ):
                         controller.feedback.counts(event, now())
                 decision = controller.decide(snapshots)
+                if (
+                    not ready
+                    and not controller.engine_uncertain
+                    and not controller.feedback.unreliable
+                    and controller.snapshots_ready(snapshots, decision_at=now())
+                ):
+                    out.write("ready.json", {"engine_id": engine_id, "ready_at": now()})
+                    ready = True
                 if decision is not None:
                     decisions += 1
                     last = decision
                 elif last is not None and (
                     controller.engine_uncertain
+                    or controller.feedback.unreliable
                     or any(
                         source["session"] not in controller.sessions.states
                         or not controller.sessions.decision(source["session"], decision_at=now())[

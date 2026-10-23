@@ -149,6 +149,52 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
             "decode_token_seconds": float(np.median(tpots)),
             "hide_probability": 0,
         }
+        first_scheduled, computed, native_requests = {}, {}, []
+        for path in sorted((native_root / "observations").glob("*/token-readiness.jsonl")):
+            sources[str(path)] = sha256_file(path)
+            status_path = path.with_suffix(".status.json")
+            status = json.loads(status_path.read_text())
+            sources[str(status_path)] = sha256_file(status_path)
+            if not status.get("flush_complete") or status.get("dropped") or status.get("errors"):
+                raise ValueError("Native model service requires loss-free complete export")
+            sequence = [0]
+
+            def native_events():
+                for event in read_jsonl(path):
+                    if event["sequence"] != sequence[0] + 1:
+                        raise ValueError("Native scheduling observations contain an event gap")
+                    sequence[0] = event["sequence"]
+                    if event["kind"] == "schedule":
+                        for rid, count in event["scheduled"].items():
+                            if count:
+                                first_scheduled.setdefault(rid, event["source_at"])
+                                computed[rid] = computed.get(rid, 0) + count
+                    yield event
+
+            native_requests.extend(token_metrics(native_events()))
+            if sequence[0] != status["last_sequence"]:
+                raise ValueError("Native scheduling observations have an incomplete export tail")
+        native_requests.sort(key=lambda r: r.get("received_at", 0))
+        warmup = native.get("measurement", {}).get("warmup_requests", 0)
+        measured_count = sum(len(t["tokens"]) for t in native["trials"])
+        service = []
+        for row in native_requests[warmup : warmup + measured_count]:
+            rid = row["request_id"]
+            if not row["complete_token_coverage"] or rid not in first_scheduled:
+                raise ValueError(
+                    "Native model service requires complete tokens and actual scheduling"
+                )
+            service.append(
+                {
+                    "request_id": rid,
+                    "computed_tokens": computed[rid],
+                    "model_service_seconds": (row["last_token_at"] - first_scheduled[rid]) / 1e9,
+                    "input_tokens": row["num_prompt_tokens"],
+                    "output_tokens": row["expected_tokens"],
+                }
+            )
+        if len(service) != measured_count:
+            raise ValueError("Native measured model-service requests are incomplete")
         out.write(
             "cost-profile.json",
             manifest(
@@ -156,6 +202,12 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
                 inputs["identity"],
                 ranks=ranks,
                 controller=controller,
+                native_service={
+                    "layers": inputs["identity"]["layers"],
+                    "requests": service,
+                    "observation_point": "first scheduled host observation to last token readiness",
+                    "scope": "measured fixed-input requests only; no pure GPU or layer-time claim",
+                },
                 sources=sources,
                 copy={
                     "bytes_per_expert": next(iter(ranks.values()))["expert_bytes"],

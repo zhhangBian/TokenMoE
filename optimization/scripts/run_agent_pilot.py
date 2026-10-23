@@ -248,6 +248,11 @@ def main():
                     stderr=subprocess.STDOUT,
                     env=env,
                 )
+            deadline = time.monotonic() + 60
+            while not (out.path / "controller/ready.json").exists():
+                if controller.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("Controller did not initialize; inspect controller.log")
+                time.sleep(0.05)
         write_json(out.path / "resource_phase.json", {"phase": "measured"})
         out.write(
             "boundaries.json",

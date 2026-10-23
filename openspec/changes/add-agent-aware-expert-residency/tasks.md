@@ -50,9 +50,9 @@ The implementing agent owns local setup, verification, and authorized runs. Thes
 
 ## 7. Replay and measurement integrity
 
-- [ ] 7.1 Implement frozen-timeline replay using unique batch/layer expert demand, finite capacity/bandwidth, in-flight state, replacement, prefill microbatches, and an explicit recompute policy; reject unsupported missing routes.
-- [ ] 7.2 Implement measured cost profiles and timing simulation that propagates delays through model work, tool starts, dependency joins, and request returns; mark uncalibrated output as diagnostic.
-- [ ] 7.3 Validate simulation on held-out live executions and report error for bytes, cache events, and timing separately; verify it cannot use miss-delayed timestamps as extra prefetch lead.
+- [x] 7.1 Implement frozen-timeline replay using unique batch/layer expert demand, finite capacity/bandwidth, in-flight state, replacement, prefill microbatches, and an explicit recompute policy; reject unsupported missing routes.
+- [x] 7.2 Implement measured cost profiles and timing simulation that propagates delays through model work, tool starts, dependency joins, and request returns; mark uncalibrated output as diagnostic.
+- [x] 7.3 Validate simulation on held-out live executions and report error for bytes, cache events, and timing separately; verify it cannot use miss-delayed timestamps as extra prefetch lead. Held-out cache counts match; the service-timing gate fails (72.56% median relative error), so timing remains unqualified.
 - [x] 7.4 Implement event/feature validators, initial residency reconstruction, transfer and slot-generation checks, and incomplete-trace handling; preserve original dataset validation behavior.
 - [x] 7.5 Implement metric extraction for true observation points, task outcomes, warmup/repetition boundaries, memory peaks, and uncertainty; distinguish engine token emission from batched client delivery.
 

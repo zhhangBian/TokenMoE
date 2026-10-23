@@ -278,22 +278,29 @@ class ResidencyController:
             )
         return probability
 
-    def decide(self, snapshots, *, decision_at=None):
-        decision_at = now() if decision_at is None else decision_at
-        if not snapshots or self.running or self.waiting or self.engine_uncertain:
-            return None
-        identity = self.predictor.identity
+    def snapshots_ready(self, snapshots, *, decision_at):
+        if not snapshots:
+            return False
         for snapshot in snapshots:
             if (
                 snapshot["clock_domain_id"] != self.sessions.clock_domain
                 or not 0 <= decision_at - snapshot["source_at"] <= 500_000_000
                 or not snapshot["consistent_idle_snapshot"]
             ):
-                return None
+                return False
             if snapshot["model_hash"] != self.cost["model_hash"]:
                 raise ValueError("Measured costs refer to another model/backend")
         if {s["device_uuid"] for s in snapshots} != set(self.cost["device_uuids"]):
             raise ValueError("Measured costs refer to another TP/device group")
+        return True
+
+    def decide(self, snapshots, *, decision_at=None):
+        decision_at = now() if decision_at is None else decision_at
+        if self.running or self.waiting or self.engine_uncertain or self.feedback.unreliable:
+            return None
+        if not self.snapshots_ready(snapshots, decision_at=decision_at):
+            return None
+        identity = self.predictor.identity
         self.epoch += 1
         resident, pinned, inflight = {}, defaultdict(set), set()
         rank_bytes, free = {}, {}

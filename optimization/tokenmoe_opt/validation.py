@@ -27,13 +27,19 @@ def validate_features(records):
     return {"passed": not errors, "errors": errors}
 
 
-def validate_cache_events(records, *, status=None, expected_layers=None):
+def validate_cache_events(records, *, status=None, expected_layers=None, checkpoint_at=None):
     slots, transfers, sequences, clocks = {}, {}, {}, {}
     engine_clocks = {}
     budgets, memory = {}, defaultdict(dict)
     uncertain, initialized, event_ids = set(), defaultdict(set), set()
     errors, reasons = [], []
     bytes_started = bytes_completed = 0
+    checkpoint, loaded, uses = {}, set(), defaultdict(int)
+
+    def capture(key, state):
+        if checkpoint_at is not None and state["observed_at"] <= checkpoint_at:
+            checkpoint[key] = dict(state)
+
     for event in records:
         engine, rank, layer = event["engine_id"], event.get("rank"), event.get("layer")
         stream = (engine, rank)
@@ -97,10 +103,18 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
                         fail("resident/staging/mapping byte accounting differs from expert layout")
                     memory[stream][layer] = values
             for slot in event["slots"]:
-                slots[(*stream, layer, slot["slot"])] = {
+                key = (*stream, layer, slot["slot"])
+                slots[key] = {
                     **slot,
                     "observed_at": source if source is not None else 0,
                 }
+                capture(key, slots[key])
+                if (
+                    checkpoint_at is not None
+                    and source <= checkpoint_at
+                    and slot["expert"] is not None
+                ):
+                    loaded.add((*stream, layer, slot["expert"]))
             for transfer in event["inflight"]:
                 transfer_id = f"{layer}:{transfer['slot']}:{transfer['generation']}"
                 transfers[(*stream, layer, transfer_id)] = transfer
@@ -137,6 +151,12 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
             if state["state"] != "FREE" or generation != state["generation"] + 1:
                 fail("load overwrites an occupied slot or invalid generation")
             state.update(state="LOADING", expert=expert, generation=generation)
+            if checkpoint_at is not None:
+                trigger = event.get("trigger")
+                state.update(frequency=0, prefetched=trigger == "prefetch" if trigger else None)
+                if source <= checkpoint_at:
+                    loaded.add((*stream, layer, expert))
+                capture(key, state)
             tid = (*stream, layer, event["transfer_id"])
             if tid in transfers or event["bytes"] <= 0:
                 fail("duplicate transfer or invalid rank-local bytes")
@@ -161,6 +181,13 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
             if state["state"] not in {"READY", "IN_USE"}:
                 fail("expert used before copy readiness")
             state["state"] = "IN_USE"
+            if checkpoint_at is not None:
+                uses[(*stream, layer)] += 1
+                state.update(
+                    last_use=uses[(*stream, layer)],
+                    frequency=state.get("frequency", 0) + 1,
+                    prefetched=False,
+                )
         elif kind == "kernel_complete":
             if state["state"] != "IN_USE":
                 fail("kernel completion without expert use")
@@ -169,6 +196,7 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
             if state["state"] != "READY":
                 fail("eviction of a loading or in-use slot")
             state.update(state="FREE", expert=None)
+        capture(key, state)
     if status is None or not status.get("flush_complete"):
         reasons.append("No complete export status; shutdown/crash coverage is unknown")
     if status and (status.get("dropped") or status.get("errors")):
@@ -202,7 +230,7 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
             )
             if required > budgets[stream]["budget_bytes_per_rank"]:
                 errors.append(f"{stream}: expert memory exceeds per-rank budget")
-    return {
+    result = {
         "passed": not errors,
         "exact_replay_available": not errors and not reasons,
         "errors": errors,
@@ -210,3 +238,15 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
         "bytes_started": bytes_started,
         "bytes_completed": bytes_completed,
     }
+    if checkpoint_at is not None:
+        result["checkpoint"] = {
+            "at": checkpoint_at,
+            "slots": [
+                {"rank": key[1], "layer": key[2], "slot": key[3], **state}
+                for key, state in sorted(checkpoint.items())
+            ],
+            "previously_loaded": [
+                {"rank": key[1], "layer": key[2], "expert": key[3]} for key in sorted(loaded)
+            ],
+        }
+    return result

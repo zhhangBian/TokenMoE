@@ -68,6 +68,14 @@ def test_slot_reconstruction_requires_matching_generations_and_readiness():
     assert not validate_cache_events(early, status=status())["passed"]
 
 
+def test_cache_checkpoint_contains_only_observed_residency_and_replacement_history():
+    result = validate_cache_events(events(), status=status(), checkpoint_at=35)
+    slot = result["checkpoint"]["slots"][0]
+    assert slot["state"] == "IN_USE" and slot["expert"] == 1
+    assert slot["frequency"] == 1 and slot["last_use"] == 1
+    assert result["checkpoint"]["previously_loaded"] == [{"rank": 0, "layer": 0, "expert": 1}]
+
+
 def test_loss_and_crash_keep_inference_evidence_but_remove_exact_replay_coverage():
     result = validate_cache_events(events(), status=status(dropped=1))
     assert result["passed"] and not result["exact_replay_available"]

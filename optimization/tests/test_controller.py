@@ -121,6 +121,13 @@ def test_residency_age_advances_while_no_session_predicts_work():
         assert c.decide([snapshot()], decision_at=time) is None
     c.event(session_event(c, 1, "session_started", identity=c.predictor.identity), receipt=250)
     assert c.decide([snapshot()], decision_at=300)["transfers"]
+
+
+def test_feedback_loss_stops_new_speculative_plans():
+    c = controller()
+    c.event(session_event(c, 1, "session_started", identity=c.predictor.identity), receipt=10)
+    c.feedback.unreliable.add("engine")
+    assert c.decide([snapshot()], decision_at=100) is None
     c.running.clear()
     c.event(session_event(c, 2, "session_cancelled"), receipt=20)
     assert c.decide([snapshot()], decision_at=100) is None

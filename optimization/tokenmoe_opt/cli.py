@@ -77,8 +77,68 @@ def main(argv=None):
     replay_parser.add_argument("--capacity", type=int, required=True)
     replay_parser.add_argument("--policy", choices=["lru", "lfu"], default="lru")
     replay_parser.add_argument("--output", type=Path, required=True)
+    replay_parser.add_argument(
+        "--timeline-kind",
+        choices=["neutral", "contains-demand-stalls"],
+        default="contains-demand-stalls",
+    )
+    simulation = commands.add_parser("simulate")
+    simulation.add_argument("--graph", type=Path, required=True)
+    simulation.add_argument("--cost-profile", type=Path, required=True)
+    simulation.add_argument("--capacity", type=int, required=True)
+    simulation.add_argument("--policy", choices=["lru", "lfu"], default="lru")
+    simulation.add_argument("--output", type=Path, required=True)
+    calibration = commands.add_parser("calibrate")
+    for name in ("run", "cost-profile", "protocol", "output"):
+        calibration.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command == "calibrate":
+        from .calibration import validate_run
+
+        print(
+            validate_run(args.run, args.cost_profile, args.protocol, args.output, command=command)
+        )
+        return
+    if args.command == "simulate":
+        from .replay import profile_costs
+        from .timing import simulate
+
+        graph = read_manifest(args.graph, "input")
+        profile = read_manifest(args.cost_profile, "cost-profile")
+        if graph["identity"] != profile["identity"] or not profile.get("controller", {}).get(
+            "measured"
+        ):
+            raise ValueError("Timing diagnostics require matching measured cost-profile identity")
+        out = Output(args.output, kind="result", identity=profile["identity"], command=command)
+        try:
+            out.write("graph.json", graph)
+            out.write(
+                "inputs.json",
+                {
+                    "sources": {
+                        str(p.resolve()): sha256_file(p) for p in (args.graph, args.cost_profile)
+                    },
+                    "cost_profile": profile,
+                },
+            )
+            out.write(
+                "metrics.json",
+                simulate(
+                    graph["nodes"],
+                    capacity=args.capacity,
+                    costs=profile_costs(profile),
+                    policy=args.policy,
+                    native_service=profile.get("native_service"),
+                    initial_snapshot=graph.get("initial_snapshot"),
+                ),
+            )
+            out.finish(evidence="uncalibrated-causal-timing-diagnostic", calibrated_timing=False)
+        except Exception as exc:
+            out.fail(exc)
+            raise
+        print(out.path)
+        return
     if args.command == "agent-metrics":
         from .agent_metrics import extract
 
@@ -183,7 +243,7 @@ def main(argv=None):
         out.write("protocol.json", protocol)
         out.finish(protocol_status="preregistered-unexecuted")
     else:
-        from .replay import CopyCost, replay
+        from .replay import CopyCost, profile_costs, replay
 
         profile = read_manifest(args.cost_profile, "cost-profile")
         cost = CopyCost(**profile["copy"])
@@ -202,7 +262,12 @@ def main(argv=None):
                 ),
             )
             result = replay(
-                read_jsonl(args.demands), capacity=args.capacity, cost=cost, policy=args.policy
+                read_jsonl(args.demands),
+                capacity=args.capacity,
+                cost=cost,
+                policy=args.policy,
+                rank_costs=profile_costs(profile),
+                timeline_kind=args.timeline_kind,
             )
             out.write("metrics.json", manifest("result", profile["identity"], **result))
             out.finish(evidence=result["evidence"])
