@@ -5,23 +5,31 @@ import numpy as np
 from .artifacts import manifest
 
 
-def grouped_splits(samples, identity):
+def grouped_splits(samples, identity, *, held_out=None):
     groups = sorted({s.task for s in samples})
     if len(groups) < 3:
         raise ValueError("At least three task groups are required for nested evaluation")
+    tests = [[g] for g in groups]
+    protocol = "leave-one-task-out-exploratory"
+    if held_out is not None:
+        held_out = sorted(set(held_out))
+        if not held_out or not set(held_out) <= set(groups) or len(groups) - len(held_out) < 2:
+            raise ValueError("Holdout requires known task groups and at least two training groups")
+        tests = [held_out]
+        protocol = "frozen-multiple-task-holdout-exploratory"
     return manifest(
         "split",
         identity,
-        protocol="leave-one-task-out-exploratory",
+        protocol=protocol,
         untouched_confirmation_groups=[],
         groups={g: sorted({s.session for s in samples if s.task == g}) for g in groups},
         folds=[
             {
-                "test": [g],
-                "train": [t for t in groups if t != g],
-                "inner_validation": [t for t in groups if t != g],
+                "test": test,
+                "train": [t for t in groups if t not in test],
+                "inner_validation": [t for t in groups if t not in test],
             }
-            for g in groups
+            for test in tests
         ],
     )
 

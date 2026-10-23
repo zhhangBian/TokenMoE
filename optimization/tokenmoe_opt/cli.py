@@ -24,6 +24,7 @@ def main(argv=None):
     )
     analysis.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 96, 128])
     analysis.add_argument("--tune", action="store_true")
+    analysis.add_argument("--held-out-task", action="append")
     plan = commands.add_parser("plan")
     plan.add_argument("--inputs", type=Path, required=True)
     plan.add_argument("--confirmation-split", type=Path, required=True)
@@ -214,6 +215,7 @@ def main(argv=None):
                 budgets=args.budgets,
                 label_version=args.label_version,
                 tune=args.tune,
+                held_out=args.held_out_task,
             )
         )
         return

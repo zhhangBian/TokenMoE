@@ -53,6 +53,7 @@ def analyze(
     budgets=(16, 32, 64, 96, 128),
     label_version=LABEL_VERSION,
     tune=False,
+    held_out=None,
 ):
     out = Output(
         output, kind="result", identity={"pending": "validated input identity"}, command=command
@@ -63,7 +64,7 @@ def analyze(
         samples, identity, validation = load_runs(roots, label_version=label_version)
         out.record["identity"] = identity
         out.write("inputs.json", manifest("input", identity, sources=hashes, validation=validation))
-        split = grouped_splits(samples, identity)
+        split = grouped_splits(samples, identity, held_out=held_out)
         out.write("splits.json", split)
         budgets = tuple(budgets)
         if not budgets or any(not 0 < b <= identity["experts"] for b in budgets):

@@ -121,6 +121,14 @@ def test_splits_keep_pilot_recovery_and_concurrency_copies_together():
     for fold in splits["folds"]:
         assert not set(fold["test"]) & set(fold["train"])
         assert set(fold["inner_validation"]) <= set(fold["train"])
+    joint = grouped_splits(samples, {"model": "qwen"}, held_out=["c", "d"])
+    assert joint["folds"] == [
+        {"test": ["c", "d"], "train": ["a", "b"], "inner_validation": ["a", "b"]}
+    ]
+    assert joint["groups"] == splits["groups"]
+    for invalid in ([], ["unknown"], ["b", "c", "d"]):
+        with pytest.raises(ValueError, match="Holdout"):
+            grouped_splits(samples, {"model": "qwen"}, held_out=invalid)
     train = [s for s in samples if s.task != "d"]
     fits = []
 
