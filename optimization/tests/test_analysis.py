@@ -42,6 +42,8 @@ class BlockGPU(importlib.abc.MetaPathFinder):
             raise AssertionError(fullname)
 sys.meta_path.insert(0, BlockGPU())
 import tokenmoe_opt.analysis, tokenmoe_opt.cli, tokenmoe_opt.protocol, tokenmoe_opt.replay
+import tokenmoe_opt.arrival_eval, tokenmoe_opt.planner, tokenmoe_opt.resources
+import tokenmoe_opt.session, tokenmoe_opt.validation
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 
@@ -150,6 +152,45 @@ def test_sparse_tool_backoff_reports_training_support():
     predicted, provenance = prior.distribution(sample("held", "held"), "tool")
     assert provenance["fallback"] and provenance["key_support"] == 1
     assert predicted[..., 0].min() == 1
+
+
+def test_overlapping_partial_requests_only_update_history_after_observation():
+    prior = Priors([sample("train", "train", expert=0)])
+    history = History()
+    late = sample("held", "s", decision=1, observed=30, expert=1)
+    retry = sample("held", "s", decision=10, observed=20, expert=2)
+    history.defer(late)
+    prediction, provenance = history.predict(retry, prior, "previous")
+    assert provenance["history_request"] is None
+    assert prediction[..., 0].min() == 1
+    history.defer(retry)
+    following = sample("held", "s", decision=25, observed=40, expert=3)
+    assert history.predict(following, prior, "previous")[1]["history_request"] == retry.request
+    following.decision = 35
+    assert history.predict(following, prior, "previous")[1]["history_request"] == retry.request
+    assert history.stale_observations == 1
+
+
+def test_empty_inner_targets_keep_serializable_null_scores():
+    samples = [sample(task, task) for task in ("a", "b", "c")]
+    for observation in samples:
+        observation.hist.fill(0)
+    alpha, scores = tune_mixture(samples, Priors, budget=2)
+    assert alpha == 0.5 and all(value is None for value in scores.values())
+    json.dumps(scores, allow_nan=False)
+
+
+def test_empty_phase_does_not_dilute_ewma_and_previous_uses_explicit_backoff():
+    prior = Priors([sample("train", "train", expert=0)])
+    history = History()
+    history.observe(sample("held", "s", decision=1, observed=2, expert=1))
+    partial = sample("held", "s", decision=3, observed=4, expert=2)
+    partial.hist[1:] = 0
+    partial.recent[1:] = 0
+    history.observe(partial)
+    target = sample("held", "s", decision=5)
+    assert history.predict(target, prior, "ewma")[0][1, 0, 1] == 1
+    assert history.predict(target, prior, "previous")[0][1, 0, 0] == 1
 
 
 def test_history_cold_start_mixes_global_history_with_available_stage_prior():

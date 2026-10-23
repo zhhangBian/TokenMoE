@@ -1,6 +1,7 @@
 """Finite-capacity frozen-timeline diagnostics; no inferred layer timestamps."""
 
 from dataclasses import dataclass
+from math import isfinite
 
 
 def token_microbatches(routes, capacity):
@@ -26,7 +27,14 @@ class CopyCost:
     setup_seconds: float = 0
 
     def __post_init__(self):
-        if self.bytes_per_expert <= 0 or self.bandwidth_bytes_second <= 0 or self.setup_seconds < 0:
+        if (
+            not isinstance(self.bytes_per_expert, int)
+            or self.bytes_per_expert <= 0
+            or not isfinite(self.bandwidth_bytes_second)
+            or self.bandwidth_bytes_second <= 0
+            or not isfinite(self.setup_seconds)
+            or self.setup_seconds < 0
+        ):
             raise ValueError("Copy costs must have positive bytes/bandwidth and nonnegative setup")
 
     @property
@@ -47,7 +55,7 @@ def replay(records, *, capacity, cost, policy="lru", recompute_policy="reject"):
         if record.get("phase") == "recompute" and not record.get("routes_authoritative"):
             raise ValueError("Operational replay requires separately recorded recompute routes")
         t = float(record["time_seconds"])
-        if t < last_time:
+        if not isfinite(t) or t < last_time:
             raise ValueError("Replay records must be chronological")
         last_time = t
         layer = record["layer"]
@@ -76,6 +84,7 @@ def replay(records, *, capacity, cost, policy="lru", recompute_policy="reject"):
                         )
                         resident[layer].remove(victim)
                     if key not in inflight:
+                        frequency[key] = 0
                         link_ready = max(link_ready, t) + cost.seconds
                         inflight[key] = link_ready
                         transferred += cost.bytes_per_expert

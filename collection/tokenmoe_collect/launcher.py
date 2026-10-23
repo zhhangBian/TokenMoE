@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .client import ChatClient
 from .clock import now
+from .events import emit
 from .hostload import HostSampler
 from .ids import new_id, sampling_seed
 from .jsonl import write_json
@@ -75,7 +76,7 @@ def run(config_path, *, sampler_source=None):
     live = {}
     lock = threading.Lock()
 
-    with RecordStore(root) as store:
+    with RecordStore(root, control_events=config.get("control_events", False)) as store:
         if store.clock["clock_domain_id"] != meta["clock_domain_id"]:
             raise ValueError("Harness and engine must use the same host boot clock")
 
@@ -88,6 +89,21 @@ def run(config_path, *, sampler_source=None):
         def session(item):
             run_id, session_id = new_id("run"), new_id("ses")
             created = now()
+            emit(
+                store,
+                "session_started",
+                source_at=created,
+                session_id=session_id,
+                application_run_id=run_id,
+                benchmark_item_id=item["instance_id"],
+                identity={
+                    "model_id": static["profile"]["model_id"],
+                    "weight_revision": static["profile"]["revision_hash"],
+                    "tokenizer_hash": static["profile"]["tokenizer_hash"],
+                    "template_id": static["role"]["agent_template_id"],
+                    "template_version": static["role"]["version_hash"],
+                },
+            )
             seed = sampling_seed(config["base_seed"], item["instance_id"], 0, 0)
             status, reason, error = "failed", "SetupError", None
             env = client = None
@@ -157,6 +173,14 @@ def run(config_path, *, sampler_source=None):
                     if client is not None:
                         client.close()
                 finished = now()
+                emit(
+                    store,
+                    "session_ended",
+                    source_at=finished,
+                    session_id=session_id,
+                    status=status,
+                    exit_reason=reason,
+                )
                 store.write(
                     "sessions",
                     {

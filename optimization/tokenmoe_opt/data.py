@@ -55,6 +55,7 @@ def phase_histograms(positions, experts, prompt, num_experts, *, recent_window=3
 
 def load_runs(roots, *, label_version=LABEL_VERSION):
     samples, identities, summaries, ids = [], set(), [], set()
+    entity_ids = set()
     for root in map(lambda p: Path(p).resolve(), roots):
         report = validate(root, write_report=False)
         if not report["passed"]:
@@ -68,6 +69,10 @@ def load_runs(roots, *, label_version=LABEL_VERSION):
             r["application_run_id"]: r for r in read_jsonl(root / "runtime/application_runs.jsonl")
         }
         tools = {r["tool_call_id"]: r for r in read_jsonl(root / "runtime/tool_calls.jsonl")}
+        for identifier in [*sessions, *runs, *tools]:
+            if identifier in entity_ids:
+                raise ValueError(f"Duplicate runtime entity ID across inputs: {identifier}")
+            entity_ids.add(identifier)
         meta = json.loads((root / "static/engine_meta.json").read_text())
         clocks = {
             p["clock_domain_id"]
@@ -125,7 +130,10 @@ def load_runs(roots, *, label_version=LABEL_VERSION):
                 )
                 counts["first_computed_positions"] += len(positions)
                 counts["partial_requests"] += not bool(route["routing_complete"])
-            observed = request.get("response_received_at") or request.get("inference_finished_at")
+            boundaries = [
+                request.get(key) for key in ("response_received_at", "inference_finished_at")
+            ]
+            observed = max((t for t in boundaries if t is not None), default=None)
             if observed is None:
                 # A finalization timestamp is an upper bound for unfinished requests.
                 observed = session["finished_at"]

@@ -2,6 +2,8 @@
 
 本地 Qwen 驻留研究的独立入口见 [optimization/README.md](../optimization/README.md)。分析使用只读校验和新输出目录；已完成的采集记录及历史验收保持原样。缓存后端、实测、扩展工作负载与较大模型分别记录完成状态。
 
+Qwen TP1/TP2 eager 缓存、张量一致性、故障退出和在线空闲预取的记录见[后端证据](../optimization/docs/backend-evidence.md)。正式 agent 对照、长工具、多角色和模型迁移仍有独立待执行项目。
+
 采集 GPT-OSS-120B、DeepSeek-V4-Flash 和 dots3-note 执行 SWE-bench Verified 时的请求、工具输出和专家路由。每个模型运行 500 个任务，分别使用 N1、N4 两档并发，共 1,000 个会话；三个模型合计 3,000 个会话。
 
 主流程采用“DSW 容器内的私有 namespace＋本地 Podman”：常驻 keeper 保留私有 user、mount、cgroup namespace，所有任务容器操作通过同一个包装入口进入其中执行。模型服务和采集脚本留在外层 DSW 容器内。整个流程使用同一 Linux 内核，无需宿主机 Docker 权限。字段定义和验收要求见 [data_collect.md](data_collect.md)，脚本参数见 [README.md](README.md)。

@@ -1,5 +1,6 @@
 """Model-specific frequency priors and causal same-session history."""
 
+import heapq
 from collections import defaultdict
 
 import numpy as np
@@ -89,8 +90,24 @@ class History:
             raise ValueError("Mixture weights must be in [0, 1]")
         self.alpha, self.ewma_alpha = alpha, ewma_alpha
         self.previous, self.ewma = {}, {}
+        self.ewma_support = {}
+        self.pending = []
+        self.stale_observations = 0
+
+    def defer(self, sample):
+        heapq.heappush(self.pending, (sample.observed, sample.decision, sample.request, sample))
+
+    def _advance(self, decision_at):
+        while self.pending and self.pending[0][0] <= decision_at:
+            _, _, _, sample = heapq.heappop(self.pending)
+            old = self.previous.get(sample.session)
+            if old is not None and sample.decision <= old.decision:
+                self.stale_observations += 1
+            else:
+                self.observe(sample)
 
     def predict(self, sample, prior, policy):
+        self._advance(sample.decision)
         if policy not in POLICIES:
             raise ValueError(f"Unknown predictor: {policy}")
         kind = policy.split("+")[-1] if "+" in policy else policy
@@ -109,14 +126,20 @@ class History:
             )
             provenance["cold_start"] = "global history; retain configured prior mixture"
         if old is not None:
+            global_dist, _ = prior.distribution(sample, "global")
+            observed = old.hist.sum(axis=-1, keepdims=True) > 0
+            history_dist = np.where(observed, normalize(old.hist), global_dist)
+            provenance["empty_history_distributions"] = int((~observed).sum())
             if policy == "previous":
-                dist = normalize(old.hist)
+                dist = history_dist
             elif policy == "recent":
-                dist = normalize(old.recent)
+                dist = np.where(observed, normalize(old.recent), global_dist)
             elif policy == "ewma":
-                dist = self.ewma[sample.session]
+                dist = np.where(
+                    self.ewma_support[sample.session], self.ewma[sample.session], global_dist
+                )
             elif "+" in policy:
-                dist = self.alpha * normalize(old.hist) + (1 - self.alpha) * dist
+                dist = self.alpha * history_dist + (1 - self.alpha) * dist
         return dist, {
             **provenance,
             "history_request": old.request if old else None,
@@ -129,9 +152,15 @@ class History:
         if old is not None and sample.decision <= old.decision:
             raise ValueError("History must advance chronologically")
         dist = normalize(sample.hist)
-        self.ewma[sample.session] = (
-            self.ewma_alpha * dist + (1 - self.ewma_alpha) * self.ewma[sample.session]
-            if sample.session in self.ewma
-            else dist
-        )
+        observed = sample.hist.sum(axis=-1, keepdims=True) > 0
+        if sample.session in self.ewma:
+            old_dist = self.ewma[sample.session]
+            update = self.ewma_alpha * dist + (1 - self.ewma_alpha) * old_dist
+            self.ewma[sample.session] = np.where(
+                observed, np.where(self.ewma_support[sample.session], update, dist), old_dist
+            )
+            self.ewma_support[sample.session] |= observed
+        else:
+            self.ewma[sample.session] = dist
+            self.ewma_support[sample.session] = observed
         self.previous[sample.session] = sample

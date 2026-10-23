@@ -9,7 +9,8 @@ def local_protocol(identity, tasks):
     return manifest(
         "experiment",
         identity,
-        protocol_id="qwen-residency-local-v1",
+        protocol_id="qwen-residency-local-v2",
+        supersedes="qwen-residency-local-v1 (unexecuted 64-token diagnostic budget)",
         status="preregistered-unexecuted",
         devices=[2, 3],
         tensor_parallel=[1, 2],
@@ -59,7 +60,9 @@ def local_protocol(identity, tasks):
         },
         latency_targets={
             "engine_ttft_p95_seconds": 1.0,
-            "tools_to_first_return_p95_seconds": 2.0,
+            "tools_to_complete_response_p95_seconds": 30.0,
+            "tools_boundary": "latest required tool completion before request creation",
+            "response_boundary": "batched client response completely received",
             "task_p95_seconds": 900.0,
         },
         correctness={
@@ -71,7 +74,11 @@ def local_protocol(identity, tasks):
             "change_thresholds_after_run": False,
         },
         outcomes="retain all failures and truncations; successful throughput needs task success evidence",
-        sampling={"temperature": 0, "seed": 42, "max_tokens": 64},
+        sampling={"temperature": 0, "seed": 42, "max_tokens": 4096},
+        diagnostic_sampling={
+            "max_tokens": [8, 64],
+            "eligibility": "backend checks only; excluded from agent service comparisons",
+        },
         kv_transfer_arbitration="unavailable; separate contention experiment required",
         evidence_levels=["lookup", "frozen-replay", "calibrated-simulation", "live"],
         milestones={

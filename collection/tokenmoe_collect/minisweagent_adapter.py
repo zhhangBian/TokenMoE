@@ -19,6 +19,7 @@ from minisweagent.models.utils.actions_toolcall import (
 )
 
 from .clock import now
+from .events import emit
 from .executor import StreamingExecutor
 from .ids import new_id
 from .runtime import runtime_command
@@ -126,6 +127,23 @@ class TracedModel:
                 parsed_at=parsed_at,
                 call_index_within_request=index,
             )
+        emit(
+            self.environment.store,
+            "tools_issued",
+            source_at=parsed_at,
+            session_id=self.environment.session_id,
+            request_id=record["llm_request_id"],
+            dependencies=[a["trace_tool_call_id"] for a in actions],
+            dependency_mode="sequential",
+            tools=[
+                {
+                    "tool_id": a["trace_tool_call_id"],
+                    "command": a.get("command", "")[:4096],
+                    "command_truncated": len(a.get("command", "")) > 4096,
+                }
+                for a in actions
+            ],
+        )
         assistant["extra"] = {
             "actions": actions,
             "cost": 0.0,
@@ -207,6 +225,7 @@ class TracedEnvironment(DockerEnvironment):
             self.config.interpreter,
             runtime_socket=runtime_socket,
             runtime_executable=runtime_executable,
+            session_id=session_id,
         )
 
     def _start_container(self):

@@ -17,7 +17,7 @@ def content_id(value):
 
 
 def new_id(prefix):
-    if prefix not in {"run", "ses", "req", "tc", "eng", "grp", "seg"}:
+    if prefix not in {"run", "ses", "req", "tc", "eng", "grp", "seg", "evt", "evtproducer"}:
         raise ValueError(f"Unknown runtime ID prefix: {prefix}")
     return f"{prefix}_{time.time_ns():016x}{uuid.uuid4().hex[:16]}"
 

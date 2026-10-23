@@ -18,34 +18,34 @@ The implementing agent owns local setup, verification, and authorized runs. Thes
 
 ## 3. CPU storage and cache state
 
-- [ ] 3.1 Add default-off cache configuration, backend compatibility validation, config hashing, per-rank byte accounting, and supported TP settings; verify unsupported modes fail before weight loading and cache-off behavior is preserved.
-- [ ] 3.2 Implement CPU-first BF16 expert loading with correct TP shards/projection order and bounded pinned staging/layout transforms; verify it does not allocate a complete GPU expert bank.
-- [ ] 3.3 Implement fixed-address per-layer slots, generation tags, reservations, readiness events, demand pins, transfer coalescing, and LRU/LFU policies; verify eviction and stale-copy behavior using the cheapest adequate tests.
-- [ ] 3.4 Implement initialization and steady-state expert/total memory accounting, including staging, scratch, host memory, and all TP ranks; verify that a too-small budget is rejected rather than expanded silently.
+- [x] 3.1 Add default-off cache configuration, backend compatibility validation, config hashing, per-rank byte accounting, and supported TP settings; verify unsupported modes fail before weight loading and cache-off behavior is preserved.
+- [x] 3.2 Implement CPU-first BF16 expert loading with correct TP shards/projection order and bounded pinned staging/layout transforms; verify it does not allocate a complete GPU expert bank.
+- [x] 3.3 Implement fixed-address per-layer slots, generation tags, reservations, readiness events, demand pins, transfer coalescing, and LRU/LFU policies; verify eviction and stale-copy behavior using the cheapest adequate tests.
+- [x] 3.4 Implement initialization and steady-state expert/total memory accounting, including staging, scratch, host memory, and all TP ranks; verify that a too-small budget is rejected rather than expanded silently.
 
 ## 4. Exact MoE execution and backend qualification
 
-- [ ] 4.1 Insert cache demand recovery between real router selection and modular expert execution; verify missing experts are loaded and never passed through as EP absent-expert sentinels.
-- [ ] 4.2 Implement deterministic capacity-fitting token microbatches, original top-k/coefficient preservation, output scattering, and reload accounting; verify prefill and batched decode whose expert union exceeds capacity.
-- [ ] 4.3 Coordinate TP plan epochs and microbatch order with rank-local readiness; verify delayed shards, duplicate demand, peer failure, and bounded shutdown without background-thread collectives.
-- [ ] 4.4 Add compact request/layer/phase feedback independent of full trace capture and implement cache/transfer and token-readiness observation modes with explicit loss accounting and asynchronous writing.
+- [x] 4.1 Insert cache demand recovery between real router selection and modular expert execution; verify missing experts are loaded and never passed through as EP absent-expert sentinels.
+- [x] 4.2 Implement deterministic capacity-fitting token microbatches, original top-k/coefficient preservation, output scattering, and reload accounting; verify prefill and batched decode whose expert union exceeds capacity.
+- [x] 4.3 Coordinate TP plan epochs and microbatch order with rank-local readiness; verify delayed shards, duplicate demand, peer failure, and bounded shutdown without background-thread collectives.
+- [x] 4.4 Add compact request/layer/phase feedback independent of full trace capture and implement cache/transfer and token-readiness observation modes with explicit loss accounting and asynchronous writing.
 - [ ] 4.5 Run the relevant CPU checks and verify the fork still installs with `VLLM_USE_PRECOMPILED=1`; retain Python-only source changes and record the fork revision/patches.
-- [ ] 4.6 Recheck actual local resources and run small Qwen TP1/TP2 eager qualification: CPU-first startup peak, forced-token tensors, real routing, greedy outputs, demand misses, overflow, cancellation, and shutdown under fixed numeric criteria.
+- [x] 4.6 Recheck actual local resources and run small Qwen TP1/TP2 eager qualification: CPU-first startup peak, forced-token tensors, real routing, greedy outputs, demand misses, overflow, cancellation, and shutdown under fixed numeric criteria.
 - [ ] 4.7 Record cache-off and repeated-baseline behavior, observer cost, demand synchronization, copy/compute cost, and native graph-enabled full-resident performance; do not proceed with a configuration that fails correctness.
 
 ## 5. Live agent events and arrival estimates
 
-- [ ] 5.1 Add the optional bounded event sink to the existing client/executor/adapter with IDs, sequences, source times, dependencies, and observed output ranges; verify unchanged prompts, tool observations, and harness independence from vLLM.
-- [ ] 5.2 Implement receipt timestamps, deduplication, gap/coalescing records, terminal snapshots, and conservative resynchronization; verify slow/disconnected consumers do not indefinitely block the agent.
-- [ ] 5.3 Implement session/request/tool states, cancellation, queued requests, and sequential/parallel tool joins; verify a completed tool alone cannot make an unresolved dependency ready.
-- [ ] 5.4 Implement historical-duration/survival prediction conditioned on elapsed time with censoring and unknown-tool fallback; evaluate interval calibration, coverage, and decision-time availability by held-out task.
+- [x] 5.1 Add the optional bounded event sink to the existing client/executor/adapter with IDs, sequences, source times, dependencies, and observed output ranges; verify unchanged prompts, tool observations, and harness independence from vLLM.
+- [x] 5.2 Implement receipt timestamps, deduplication, gap/coalescing records, terminal snapshots, and conservative resynchronization; verify slow/disconnected consumers do not indefinitely block the agent.
+- [x] 5.3 Implement session/request/tool states, cancellation, queued requests, and sequential/parallel tool joins; verify a completed tool alone cannot make an unresolved dependency ready.
+- [x] 5.4 Implement historical-duration/survival prediction conditioned on elapsed time with censoring and unknown-tool fallback; evaluate interval calibration, coverage, and decision-time availability by held-out task.
 
 ## 6. Shared residency and idle prefetch
 
-- [ ] 6.1 Implement shared demand aggregation from phase distributions, expected token volumes, arrival/service probabilities, and actual scheduler state; verify shared experts and transfers are deduplicated per rank.
-- [ ] 6.2 Implement the measured-cost planner, existing-residency preference, displacement accounting, churn limits, demand priority, and per-rank/shared-link resource ledgers; verify speculative limits are enforced.
-- [ ] 6.3 Add bounded worker plan mailboxes and worker-owned asynchronous copy streams independent of model RPC; verify a real prefetch starts during an idle tool interval before the next request arrives.
-- [ ] 6.4 Implement plan expiry, controller-disconnect fallback, in-flight-copy resolution, and rollback to demand-only execution; verify live fallback never assumes enough memory for full residency.
+- [x] 6.1 Implement shared demand aggregation from phase distributions, expected token volumes, arrival/service probabilities, and actual scheduler state; verify shared experts and transfers are deduplicated per rank.
+- [x] 6.2 Implement the measured-cost planner, existing-residency preference, displacement accounting, churn limits, demand priority, and per-rank/shared-link resource ledgers; verify speculative limits are enforced.
+- [x] 6.3 Add bounded worker plan mailboxes and worker-owned asynchronous copy streams independent of model RPC; verify a real prefetch starts during an idle tool interval before the next request arrives.
+- [x] 6.4 Implement plan expiry, controller-disconnect fallback, in-flight-copy resolution, and rollback to demand-only execution; verify live fallback never assumes enough memory for full residency.
 - [ ] 6.5 Integrate observable KV transfer reservations when supported; otherwise explicitly label arbitration unavailable and provide the separate contention-experiment configuration without changing KV eviction.
 
 ## 7. Replay and measurement integrity

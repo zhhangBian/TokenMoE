@@ -28,7 +28,7 @@ def grouped_splits(samples, identity):
 
 def tune_mixture(train, prior_factory, *, candidates=(0.0, 0.5, 1.0), budget=64):
     """Tune only on inner held-out tasks; history updates after each target ends."""
-    from .predictors import coverage, normalize
+    from .predictors import History, coverage
 
     groups = sorted({s.task for s in train})
     if len(groups) < 2:
@@ -36,25 +36,21 @@ def tune_mixture(train, prior_factory, *, candidates=(0.0, 0.5, 1.0), budget=64)
     scores = {alpha: [] for alpha in candidates}
     for held in groups:
         prior = prior_factory([s for s in train if s.task != held])
-        previous = {}
+        histories = {alpha: History(alpha=alpha) for alpha in candidates}
         totals = {alpha: [0, 0] for alpha in candidates}
         for sample in sorted((s for s in train if s.task == held), key=lambda s: s.decision):
-            old = previous.get(sample.session)
-            if old is not None and old.observed > sample.decision:
-                raise ValueError("Future request observation used for history")
             for alpha in candidates:
-                pred = prior.distribution(sample, "global")[0]
-                if old is not None:
-                    pred = alpha * normalize(old.hist) + (1 - alpha) * pred
+                history = histories[alpha]
+                pred = history.predict(sample, prior, "previous+global")[0]
                 numerator, denominator = coverage(sample.hist, pred, budget)
                 totals[alpha][0] += numerator
                 totals[alpha][1] += denominator
-            previous[sample.session] = sample
+                history.defer(sample)
         for alpha, (numerator, denominator) in totals.items():
             if denominator:
                 scores[alpha].append(numerator / denominator)
-    means = {
-        alpha: float(np.mean(values)) if values else float("-inf")
-        for alpha, values in scores.items()
-    }
-    return max(candidates, key=lambda alpha: (means[alpha], -alpha)), means
+    means = {alpha: float(np.mean(values)) if values else None for alpha, values in scores.items()}
+    supported = [alpha for alpha in candidates if means[alpha] is not None]
+    if not supported:
+        return (0.5 if 0.5 in candidates else candidates[0]), means
+    return max(supported, key=lambda alpha: (means[alpha], -alpha)), means

@@ -207,6 +207,8 @@ def write_static(run_dir, run_config, model_config, engine_dir, items, mini_conf
     for key in ["collection_profile", "protocol_id", "source_manifest_ref"]:
         if key in run_config:
             experiment[key] = run_config[key]
+    if run_config.get("control_events"):
+        experiment["harness"].update(control_events=True, control_schema_version=1)
     experiment["experiment_config_id"] = content_id(experiment)
     dataset_path = Path(run_config["dataset_path"])
     dataset_files = (

@@ -64,7 +64,8 @@ def finalized_run(tmp_path, request):
     (engine / "requests.jsonl").touch()
     (engine / "steps.jsonl").touch()
     calls = []
-    prompt_newline = getattr(request, "param", "\n")
+    parameter = getattr(request, "param", "\n")
+    prompt_newline = "\n" if parameter == "control-events" else parameter
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -201,6 +202,7 @@ def finalized_run(tmp_path, request):
         "tool_timeout": 1,
         "output_dir": str(tmp_path / "run"),
         "engine_dir": str(engine),
+        "control_events": parameter == "control-events",
     }
     (tmp_path / "run.yaml").write_text(yaml.safe_dump(config))
     try:
@@ -218,6 +220,7 @@ def finalized_run(tmp_path, request):
         thread.join()
 
 
+@pytest.mark.parametrize("finalized_run", ["\n", "control-events"], indirect=True)
 def test_real_agent_fake_transport_roundtrip(finalized_run):
     root, calls, config = finalized_run
     sessions = list(read_jsonl(root / "runtime/sessions.jsonl"))

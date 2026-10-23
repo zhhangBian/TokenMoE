@@ -5,6 +5,7 @@ import copy
 import httpx
 
 from .clock import now
+from .events import emit
 from .ids import new_id, sampling_seed
 
 
@@ -68,6 +69,14 @@ class ChatClient:
             }
             self.previous_messages = copy.deepcopy(messages)
             self.previous_request_id = identifier
+            emit(
+                self.store,
+                "request_created",
+                source_at=created,
+                session_id=self.session_id,
+                request_id=identifier,
+                dependencies=list(prev_tool_call_ids),
+            )
             body = {
                 **self.sampling,
                 "model": self.model,
@@ -79,6 +88,13 @@ class ChatClient:
             }
             try:
                 record["request_sent_at"] = now()
+                emit(
+                    self.store,
+                    "request_sent",
+                    source_at=record["request_sent_at"],
+                    session_id=self.session_id,
+                    request_id=identifier,
+                )
                 response = self.http.post("chat/completions", json=body)
                 record["response_received_at"] = now()
                 response.raise_for_status()
@@ -110,10 +126,25 @@ class ChatClient:
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 self.store.write("llm_requests", record)
+                emit(
+                    self.store,
+                    "request_completed",
+                    session_id=self.session_id,
+                    request_id=identifier,
+                    status=record["request_status"],
+                )
                 if retryable and attempt_id < self.retries:
                     continue
                 raise
             self.store.write("llm_requests", record)
+            emit(
+                self.store,
+                "request_completed",
+                source_at=record["response_received_at"],
+                session_id=self.session_id,
+                request_id=identifier,
+                status=record["request_status"],
+            )
             return payload, record
         raise AssertionError("Unreachable")
 

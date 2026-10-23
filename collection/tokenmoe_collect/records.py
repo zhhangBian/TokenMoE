@@ -17,7 +17,7 @@ TABLES = (
 
 
 class RecordStore:
-    def __init__(self, run_dir):
+    def __init__(self, run_dir, *, control_events=False):
         self.run_dir = Path(run_dir)
         self.clock = clock_metadata()
         self.directory = (
@@ -31,11 +31,19 @@ class RecordStore:
         self.writers = {table: JsonlWriter(self.directory / f"{table}.jsonl") for table in TABLES}
         self.outputs = self.directory / "tool_outputs"
         self.outputs.mkdir()
+        self.event_sink = None
+        if control_events:
+            from .events import BoundedEventSink
+
+            self.event_sink = BoundedEventSink(self.directory / "control_events.jsonl")
 
     def write(self, table, record):
         self.writers[table].write(record)
 
     def close(self):
+        if self.event_sink is not None:
+            status = self.event_sink.close()
+            write_json(self.directory / "control_export_status.json", status)
         for writer in self.writers.values():
             writer.close()
 

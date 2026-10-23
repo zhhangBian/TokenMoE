@@ -22,6 +22,12 @@ Outputs include input SHA-256, read-only validation, model/weight/tokenizer/temp
 
 `plan` freezes the local N1/N4, slot/TP, sampling, KV/graph, warmup, repetition, numeric tolerance, outcome and latency-target protocol. Status is preregistered and unexecuted. Plans never mark backend, workload or migration milestones complete. Read [screening evidence](docs/screening-evidence.md) for reproduced results and retained diagnostics.
 
+`tokenmoe-opt arrivals --inputs ANALYSIS/inputs.json --output NEW-DIR` evaluates task-held-out empirical survival on validated historical tools. The local 1,021-tool diagnostic produced 1,973 elapsed-time decisions and 74.52% task-macro coverage for nominal 80% intervals, with 1,955 finite uncensored intervals. The report retains unknown tails and calibration errors; this is not live timing-benefit evidence.
+
+The optional collection flag `control_events: true` exports bounded live control records without changing agent prompts or tool observations. `SessionState.receive` records controller receipt; gaps suppress predictions until an observed snapshot, duplicate events are idempotent, terminal sessions remain terminal, and sequential/parallel joins require every dependency. No harness module imports vLLM. The cost-aware planner accepts explicit model-specific distributions, token volumes, arrival/service probabilities and actual scheduler/session states, with atomic per-rank and shared-link reservations.
+
+The default-off Python cache and diagnostic commands are described in [backend evidence](docs/backend-evidence.md). `fit-costs` requires a matching native/cache pair, complete detailed events and exact model/device identities. `control` requires a frozen predictor with training-task provenance, validated duration-training sources, measured compatible costs, client events, engine scheduling/readiness events, compact feedback and fresh worker snapshots. It rejects training-task sessions. Worker delivery uses private local datagram mailboxes with bounded plans and five-second leases; demand always takes priority. `diagnostic-metrics` reports actual token observation points, transfers and sampled resources, keeping missing or partial fields explicit. These commands do not establish a controlled policy gain or calibrated timing simulation.
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py

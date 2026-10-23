@@ -91,12 +91,14 @@ def analyze(
                     history_alpha=alpha,
                     ewma_alpha=0.5,
                     recent_window=32,
+                    recent_window_scope="trailing computed positions within the corresponding previous phase",
                     tie_break="stable ascending expert ID; final K entries",
                     cold_start="global history; retain configured prior mixture",
                     protocol="frozen training priors + chronological same-session history",
                     test_session_sharing=False,
                     inner_scores=inner_scores,
                     parameters=prior.artifact(),
+                    training_tasks=sorted({sample.task for sample in train}),
                 )
                 out.write(f"predictors/fold-{fold_index:02d}.json", params)
                 parameters.append({k: v for k, v in params.items() if k != "parameters"})
@@ -151,7 +153,7 @@ def analyze(
                         )
                         + "\n"
                     )
-                    history.observe(sample)
+                    history.defer(sample)
         summary = []
         for (policy, budget, phase, group), values in sorted(cells.items()):
             hits, totals = values.sum(axis=-1)

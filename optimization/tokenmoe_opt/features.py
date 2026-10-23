@@ -86,6 +86,8 @@ def request_features(
             else "success"
             if tool.get("exit_status") == 0
             else "failure"
+            if tool.get("exit_status") is not None
+            else "unknown"
         )
     key = tuple(sorted(set(categories)))
     return {

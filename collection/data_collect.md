@@ -276,6 +276,8 @@ spawned_session_id              spawn_agent 时填写
 
 An optional live event may reference only the byte range already observed by the executor, with source sequence/time and separate controller receipt. Bounded side-channel loss requires a gap record and a conservative snapshot before resuming predictions. The raw byte stream and agent-visible observation remain authoritative.
 
+Run configuration `control_events: true` enables `raw/harness/<producer>/control_events.jsonl` and `control_export_status.json`. Schema v1 records `event_id` (`evt_`), `producer_id` (`evtproducer_`), producer-wide `sequence`, `kind`, `source_at`, clock domain, session/request/tool references, known dependencies, and observed output ranges. Tool issuance includes at most 4,096 command characters with an explicit truncation flag. Mini-swe-agent 2.4.6 executes its action list sequentially; exported dependency mode preserves that order. Queue capacity is 256, session-snapshot capacity 512, and each event is at most 64 KiB. Overflow increments loss counters; the next export carries `dropped_before`, an observed `snapshot` and `snapshot_at_sequence`. Shutdown exports a terminal snapshot and a bounded-flush status. Snapshots cannot be used at decisions preceding receipt. A consumer gap suppresses prediction until resynchronization; terminal sessions cannot reactivate. The original raw output and observation contracts are unchanged.
+
 工具执行器以 stdout=PIPE、stderr=STDOUT（SWE-bench 使用 bash -c 和 BASH_ENV=/root/.bashrc） 合并管道 tee 原始输出流：
 
 ```text
@@ -341,7 +343,7 @@ net_rx_bytes, net_tx_bytes
 
 ### 4.10 Cache 与搬运事件（系统实验阶段）
 
-Optimization event schema v1 requires engine/rank, ordered event sequence, policy/plan epoch, layer/logical expert, slot/generation, transfer ID, trigger, rank-local bytes, tiers, and nullable request/step attribution. Record demand before any miss wait. Load start/completion/failure, hit/miss, eviction and cancellation are distinct. Host enqueue, device copy duration and exposed readiness wait are distinct observations; unavailable measurements are null. Exact reconstruction requires complete initialization events or a resident/in-flight snapshot. Telemetry gaps invalidate exact replay coverage for the affected interval, without discarding inference outcomes. This contract does not claim that runtime export is already implemented.
+Optimization event schema v1 requires engine/rank, ordered event sequence, policy/plan epoch, layer/logical expert, slot/generation, transfer ID, trigger, rank-local bytes, tiers, and nullable request/step attribution. Record demand before any miss wait. Load start/completion/failure, hit/miss, eviction and cancellation are distinct. Host enqueue, device copy duration and exposed readiness wait are distinct observations; unavailable measurements are null. Exact reconstruction requires complete initialization events or a resident/in-flight snapshot. Telemetry gaps invalidate exact replay coverage for the affected interval, without discarding inference outcomes. The default-off Qwen cache now exports compact request/layer/phase feedback or detailed transfer lifecycles through bounded asynchronous writers. Compact feedback cannot qualify exact cache replay. Independent scheduler observations record request receipt, actual running/waiting state, token readiness and completion; several tokens observed together share a batch time, with no invented individual delivery times. Implementation evidence and remaining qualification gates are recorded in `optimization/docs/backend-evidence.md`.
 
 ```text
 cache_event_id
@@ -367,6 +369,8 @@ Optional optimization control events preserve source sequence and controller rec
 ## 5. 离线派生标签
 
 Optimization `request-features-v2` retains `command-outcome-v1` for screening reproduction and adds `shell-command-v2` for executable-word compound labels. Quoted command payloads are not executable categories; unsupported heredocs/substitutions receive unknown. Historical labels remain unchanged. Conditional priors require eight training requests, otherwise global backoff. Same-session history becomes visible only after the preceding response; inner tuning uses only outer-training task groups. Ties use stable ascending expert IDs and take the final K entries. Empty targets have null metrics and a reason.
+
+Arrival diagnostics fit right-censored empirical survival on outer-training tasks, condition on observed elapsed runtime, and retain unresolved tails as null quantiles. Unknown categories back off to global duration history. Held-out decisions use fixed elapsed checkpoints while a tool is still running, without using final duration as a prediction feature. Reports disclose finite interval support, task-macro coverage, horizon calibration and correlated checkpoints; historical timing does not measure live receipt delay.
 
 Local labels under `derived/labels_v1/` include command-derived tool categories (`test`, `inspect`, `edit`, `build_or_install`, `unknown`), observed outcomes (`success`, `failure`, `timeout`, `unknown`), and first-step/tool-switch markers. Files record `rules_version`, category/outcome availability timestamps, request IDs, and tool IDs. Final outcomes are supervision unavailable at tool issuance. These labels are recomputable descriptive annotations; they do not implement a predictor.
 

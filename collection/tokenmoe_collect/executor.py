@@ -8,6 +8,7 @@ import threading
 import time
 
 from .clock import now
+from .events import emit
 from .runtime import runtime_command
 
 
@@ -22,8 +23,10 @@ class StreamingExecutor:
         interpreter=None,
         runtime_socket=None,
         runtime_executable=None,
+        session_id=None,
     ):
         self.store = store
+        self.session_id = session_id
         self.runtime = runtime
         self.runtime_argv = runtime_command(runtime, runtime_socket, runtime_executable)
         self.container_id = container_id
@@ -56,6 +59,13 @@ class StreamingExecutor:
         output = bytearray()
         chunks = 0
         started = now()
+        emit(
+            self.store,
+            "tool_started",
+            source_at=started,
+            session_id=self.session_id,
+            tool_id=tool_call_id,
+        )
         deadline = time.monotonic() + timeout
         process = None
         timed_out = False
@@ -90,6 +100,17 @@ class StreamingExecutor:
                             timestamp = now()
                             raw.write(data)
                             raw.flush()
+                            emit(
+                                self.store,
+                                "tool_output",
+                                source_at=timestamp,
+                                session_id=self.session_id,
+                                tool_id=tool_call_id,
+                                output_ref=str(destination.relative_to(self.store.run_dir)),
+                                byte_offset=len(output),
+                                byte_length=len(data),
+                                chunk_index=chunks,
+                            )
                             self.store.write(
                                 "tool_output_chunks",
                                 {
@@ -119,6 +140,14 @@ class StreamingExecutor:
             if process is not None and process.stdout is not None:
                 process.stdout.close()
             finished = now()
+            emit(
+                self.store,
+                "tool_completed",
+                source_at=finished,
+                session_id=self.session_id,
+                tool_id=tool_call_id,
+                outcome="timeout" if timed_out else "success" if returncode == 0 else "failure",
+            )
             with self._lock:
                 self._active -= 1
         # subprocess.run(text=True) uses universal newline translation.
