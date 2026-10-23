@@ -4,10 +4,14 @@ context: |
   TokenMoE is a research prototype: agent-metadata-conditioned MoE expert
   demand prediction for serving (see `#idea.md` at the repo root).
 
-  Current scope is data collection only. All collection code, configs, scripts
-  and docs live in one self-contained directory, `collection/`. Other sub-works
-  (predictors, simulators, runtime) will get their own directories later; do
-  not add placeholders for them.
+  Local Qwen runtime collection is complete. Current design scope includes
+  causal demand analysis, expert residency, and joint latency/throughput/memory
+  evaluation, with local Qwen verification before larger-model experiments.
+  Collection code, configs, scripts and docs remain in `collection/`.
+  Optimization work belongs in a separate `optimization/` package when
+  implementation starts; GPU execution changes belong in the `vllm/` fork.
+  Proposal/spec authoring must not create implementation placeholders or start
+  experiments. Historical collection data and acceptance records are immutable.
 
   - Authoritative collection spec: `collection/data_collect.md`. Records,
     storage layout and validation rules come from it; any deviation must be
@@ -22,8 +26,9 @@ context: |
   - Hardware: formal collection uses borrowed Hopper GPUs with DeepSeek-V4-Flash,
     dots3-note and GPT-OSS-120B. Local Qwen3-30B-A3B runtime collection uses
     the actual available A100 devices discovered before each run.
-  - For the local Qwen profile, the executing agent owns authorized installs,
-    missing-asset downloads, image pulls, GPU runs, fault repair and recovery.
+  - For local Qwen collection and optimization implementation, the executing
+    agent owns authorized installs, missing-asset downloads, image pulls,
+    GPU runs, fault repair and recovery.
     Preserve real failure traces and report actual execution evidence.
     Other collection workflows retain their existing execution arrangements.
   - First harness: mini-swe-agent 2.4.6 on SWE-bench Verified. Other harnesses
