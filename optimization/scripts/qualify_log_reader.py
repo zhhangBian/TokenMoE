@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from tokenmoe_collect.assets import inspect_model, sha256_file
-from tokenmoe_collect.report import distribution
+from tokenmoe_collect.statistics import distribution
 
 from tokenmoe_opt.artifacts import Output, read_manifest
 from tokenmoe_opt.log_reader import parse_forecast
@@ -48,6 +48,7 @@ def main():
     os.environ["OMP_NUM_THREADS"] = str(protocol["torch_threads"])
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     import torch
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     torch.set_num_threads(protocol["torch_threads"])
@@ -59,6 +60,28 @@ def main():
         command=[sys.executable, __file__, *sys.argv[1:]],
     )
     out.write("protocol.json", protocol)
+    out.write(
+        "environment.json",
+        {
+            "python": sys.version,
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "cuda_runtime": torch.version.cuda,
+            "packages": subprocess.check_output(
+                ["uv", "pip", "freeze", "--python", sys.executable], text=True
+            ),
+            "gpu": subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "-i",
+                    str(protocol["device"]),
+                    "--query-gpu=index,uuid,name,memory.total",
+                    "--format=csv,noheader",
+                ],
+                text=True,
+            ),
+        },
+    )
     monitor, model = None, None
     rows = []
     try:
@@ -85,13 +108,16 @@ def main():
             time.sleep(0.05)
         started = time.monotonic()
         tokenizer = AutoTokenizer.from_pretrained(protocol["model_path"], local_files_only=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            protocol["model_path"],
-            dtype=torch.bfloat16,
-            device_map={"": 0},
-            local_files_only=True,
-            attn_implementation="sdpa",
-        ).eval()
+        model = (
+            AutoModelForCausalLM.from_pretrained(
+                protocol["model_path"],
+                dtype=torch.bfloat16,
+                local_files_only=True,
+                attn_implementation="sdpa",
+            )
+            .to("cuda")
+            .eval()
+        )
         startup = time.monotonic() - started
 
         def predict(sample):

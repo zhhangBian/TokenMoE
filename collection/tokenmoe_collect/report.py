@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from .assets import sha256_file
 from .estimate import measured
 from .jsonl import read_jsonl, write_json
+from .statistics import distribution
 
 
 def rows(root, name):
@@ -22,16 +23,6 @@ def parquet_rows(path):
     if Path(path).exists():
         for batch in pq.ParquetFile(path).iter_batches(batch_size=4096):
             yield from batch.to_pylist()
-
-
-def distribution(values):
-    values = [float(x) for x in values if x is not None]
-    return {
-        "count": len(values),
-        "p50": float(np.percentile(values, 50)) if values else None,
-        "p95": float(np.percentile(values, 95)) if values else None,
-        "reason": None if values else "No observed values with complete endpoints",
-    }
 
 
 def interval(row, start, end):
