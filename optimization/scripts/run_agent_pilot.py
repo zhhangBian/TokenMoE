@@ -55,6 +55,8 @@ def main():
             parser.error("Pilot tasks overlap predictor training groups")
     costs = None
     execution = cache_execution(protocol["execution"])
+    if predictive and execution["prefill_execution"] != "tokens":
+        parser.error("Expert-major predictive transfer benefits are not qualified")
     if cached:
         costs = read_manifest(args.cost_profile, "cost-profile")
         if costs["identity"] != protocol["identity"] or len(costs["ranks"]) != 2:
