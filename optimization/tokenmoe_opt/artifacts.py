@@ -27,7 +27,7 @@ def source_version(root=None):
 
     files = sorted(
         p
-        for directory in ("optimization", "collection/tokenmoe_collect")
+        for directory in ("optimization", "collection/tokenmoe_collect", "vllm/vllm")
         for p in (root / directory).rglob("*")
         if p.is_file() and (p.suffix in {".py", ".toml", ".json"})
     )

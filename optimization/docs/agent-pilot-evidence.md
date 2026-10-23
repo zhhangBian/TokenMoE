@@ -160,3 +160,19 @@ and status; a stalled consumer still triggers nonblocking, counted drops.
 `qwen-forced-layer-hostmap-20261023-v1` independently verifies real layer-0
 weights with 97 selected logical experts at capacity 16: TP1 and both TP2
 shards have zero output error under forced identical inputs.
+
+Frozen source v7 (root `dd1e2a0`, fork `d16b0ef3ee`) completes the loss-free
+matched repeat `qwen-agent-prefix-{native,c64}-tp2-20261023-v8`. Each rank
+exports all 563,339 events with zero drops/errors and complete flush. Cached
+short trials take 1.279/1.169/1.141 s; the matching 288-file tensor/router gate
+passes. `qwen-agent-prefix-costs-20261023-v8` is fitted from this pair. These
+within-engine short tests support continued exploratory agent measurement;
+they do not establish an agent-policy gain or a calibrated timing simulator.
+
+`qwen-residency-joint-holdout-20261023-v1` fits the existing predictors while
+jointly holding out astropy-12907, django-10097, matplotlib-13989 and
+requests-1142 across both historical concurrency runs. Its single fold uses
+the other 16 task groups, with the same rule applied to duration training and
+inner tuning. This prepares a shared-controller N4 comparison; no confirmation
+task has been executed. Agent source-stability checks now include fork Python
+and configuration files as well as CPU code, independent of the fork commit ID.
