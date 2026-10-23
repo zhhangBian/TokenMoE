@@ -37,6 +37,10 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
     ):
         if native["config"][key] != cached["config"][key]:
             raise ValueError(f"Cost fitting configurations differ: {key}")
+    if native["config"].get("generation_config", "auto") != cached["config"].get(
+        "generation_config", "auto"
+    ):
+        raise ValueError("Cost fitting configurations differ: generation_config")
     model_path = Path(cached["config"]["model"])
     metadata = model_path / ".cache/huggingface/download/config.json.metadata"
     config_path, tokenizer_path = model_path / "config.json", model_path / "tokenizer.json"

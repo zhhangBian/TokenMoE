@@ -32,7 +32,7 @@ def command(model_config, *, port=8000, capture=True):
     ]
     if capture:
         args.append("--enable-return-routed-experts")
-    for key, value in config["serve"].items():
+    for key, value in {"shutdown_timeout": 30, **config["serve"]}.items():
         if value is None or value is False:
             continue
         args.append("--" + key.replace("_", "-"))
@@ -69,7 +69,9 @@ def pull_images(run_config):
     dataset_path = (config_path.parent / Path(config["dataset_path"]).expanduser()).resolve()
     for item in load_benchmark(dataset_path, config["instances"]):
         if config.get("collection_profile") == "local-qwen3-runtime-v1":
-            cached = subprocess.run([*prefix, "image", "exists", image_name(item)], check=False, capture_output=True)
+            cached = subprocess.run(
+                [*prefix, "image", "exists", image_name(item)], check=False, capture_output=True
+            )
             if cached.returncode == 0:
                 print(f"Reusing cached task image: {image_name(item)}", flush=True)
                 continue

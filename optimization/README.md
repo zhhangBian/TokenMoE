@@ -31,6 +31,8 @@ The default-off Python cache and diagnostic commands are described in [backend e
 
 `optimization/scripts/qualify_qwen.py` supports fixed warmup and repetition counts plus native graph, UVA and layer-prefetch references. Keep eight-token diagnostics separate from the 4096-token agent protocol. `optimization/scripts/summarize_qualification.py --run NATIVE --run CACHE --output NEW-DIR` validates matching runtime sources, devices, KV/scheduler settings, warmup/repetitions and greedy outputs before writing a short-cost comparison. It labels aggregate cache counters as whole-engine measurements, including warmup. The current cache's short-trial costs exceed native and UVA; the evidence document retains these negative results.
 
+`optimization/scripts/run_agent_pilot.py` reuses the real collection launcher with explicit `optimization-agent-v1` metadata-only provenance, fixed warmup, measured boundaries and raw task outcomes. It accepts exploration tasks only and rejects overlap with predictor training groups. `agent-metrics --run PILOT --output NEW-DIR` extracts actual engine/client observations, failed outcomes, windowed transfer/resource data and whole-task uncertainty. These runs cannot be finalized as full routing datasets. Read [agent pilot evidence](docs/agent-pilot-evidence.md) for the real N1 run, its failed task outcome and the shutdown fault being repaired before controlled comparisons.
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py

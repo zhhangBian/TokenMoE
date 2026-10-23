@@ -124,12 +124,15 @@ def wait_ready(url, process, timeout=1200):
 
 def stop_server(process):
     if process.poll() is None:
-        os.killpg(process.pid, signal.SIGTERM)
+        # Give the API parent time to drain observers and its worker hierarchy.
+        process.terminate()
         try:
             process.wait(timeout=45)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
+            return True
+    return False
 
 
 def equivalence(model_config, dataset_path, output_dir, *, port=8001, startup_timeout=1200):

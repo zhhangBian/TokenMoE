@@ -40,6 +40,7 @@ def monitor(pid, devices, output, *, interval=0.1):
     peaks = {
         "device_bytes": dict.fromkeys(map(str, devices), 0),
         "process_tree_rss": 0,
+        "aggregate_device_bytes": 0,
         "samples": 0,
         "phases": {},
     }
@@ -75,6 +76,9 @@ def monitor(pid, devices, output, *, interval=0.1):
                 peaks["process_tree_rss"] = max(peaks["process_tree_rss"], sum(memory.values()))
                 phase_peaks = peaks["phases"].setdefault(phase, dict.fromkeys(map(str, devices), 0))
                 if record["gpu_mem_used"] is not None:
+                    peaks["aggregate_device_bytes"] = max(
+                        peaks["aggregate_device_bytes"], sum(record["gpu_mem_used"])
+                    )
                     for index, value in zip(devices, record["gpu_mem_used"]):
                         key = str(index)
                         peaks["device_bytes"][key] = max(peaks["device_bytes"][key], value)

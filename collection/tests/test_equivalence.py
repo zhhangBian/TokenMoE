@@ -1,8 +1,11 @@
 import copy
+import signal
+import subprocess
+from unittest.mock import Mock
 
 import numpy as np
 
-from tokenmoe_collect.equivalence import compare
+from tokenmoe_collect.equivalence import compare, stop_server
 
 
 def test_equivalence_checks_nondeterminism_floor_and_routing(tmp_path):
@@ -35,3 +38,16 @@ def test_equivalence_checks_nondeterminism_floor_and_routing(tmp_path):
     rounds[2][0]["routing_file"] = str(invalid)
     result = compare(rounds, "config", 128, 2)
     assert result["invalid_routing"] and result["routing_disagreements"]
+
+
+def test_server_shutdown_signals_parent_before_worker_group(monkeypatch):
+    signal_group = Mock()
+    monkeypatch.setattr("tokenmoe_collect.equivalence.os.killpg", signal_group)
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    assert not stop_server(process)
+    process.terminate.assert_called_once_with()
+    signal_group.assert_not_called()
+    process.wait.side_effect = [subprocess.TimeoutExpired("server", 45), 0]
+    assert stop_server(process)
+    signal_group.assert_called_once_with(1234, signal.SIGKILL)

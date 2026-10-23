@@ -68,6 +68,9 @@ def main(argv=None):
     metrics = commands.add_parser("diagnostic-metrics")
     metrics.add_argument("--run", type=Path, required=True)
     metrics.add_argument("--output", type=Path, required=True)
+    agent_metrics = commands.add_parser("agent-metrics")
+    agent_metrics.add_argument("--run", type=Path, required=True)
+    agent_metrics.add_argument("--output", type=Path, required=True)
     replay_parser = commands.add_parser("replay")
     replay_parser.add_argument("--demands", type=Path, required=True)
     replay_parser.add_argument("--cost-profile", type=Path, required=True)
@@ -76,6 +79,11 @@ def main(argv=None):
     replay_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command == "agent-metrics":
+        from .agent_metrics import extract
+
+        print(extract(args.run, args.output, command=command))
+        return
     if args.command == "fit-costs":
         from .costs import fit
 

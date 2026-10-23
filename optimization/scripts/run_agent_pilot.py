@@ -270,18 +270,31 @@ def main():
         out.fail(exc)
         raise
     finally:
-        if controller is not None:
-            controller.terminate()
-            controller.wait(timeout=5)
-        if server is not None:
-            stop_server(server)
-        if resources is not None:
-            resources.terminate()
-            resources.wait(timeout=5)
-        peaks = out.path / "resources/peaks.json"
-        out.record["resources"] = json.loads(peaks.read_text()) if peaks.exists() else None
-        out.record["shutdown"] = "complete"
-        out.write("manifest.json", out.record)
+        forced = []
+
+        def close_child(process, name):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    forced.append(name)
+
+        write_json(out.path / "resource_phase.json", {"phase": "shutdown"})
+        try:
+            close_child(controller, "controller")
+        finally:
+            try:
+                if server is not None and stop_server(server):
+                    forced.append("server")
+            finally:
+                close_child(resources, "resources")
+                peaks = out.path / "resources/peaks.json"
+                out.record["resources"] = json.loads(peaks.read_text()) if peaks.exists() else None
+                out.record.update(shutdown="complete", forced_cleanup=forced)
+                out.write("manifest.json", out.record)
 
 
 if __name__ == "__main__":

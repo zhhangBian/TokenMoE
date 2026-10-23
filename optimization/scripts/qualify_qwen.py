@@ -16,6 +16,7 @@ import psutil
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from vllm import LLM, SamplingParams
+from vllm.config.expert_cache import ExpertCacheConfig
 
 
 def record_sources(directory):
@@ -74,6 +75,11 @@ def main():
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--native-graph", action="store_true")
     parser.add_argument("--offload", choices=["none", "uva", "prefetch"], default="none")
+    parser.add_argument("--slots", type=int, choices=[16, 32, 64, 96, 128], default=16)
+    parser.add_argument("--max-model-len", type=int, default=2048)
+    parser.add_argument("--max-batched-tokens", type=int, choices=[128, 4096], default=128)
+    parser.add_argument("--kv-gib", type=int, choices=[1, 8], default=1)
+    parser.add_argument("--prompt-tokens", type=Path)
     parser.add_argument("--live-predictor", type=Path)
     parser.add_argument("--live-inputs", type=Path)
     parser.add_argument("--live-costs", type=Path)
@@ -101,12 +107,13 @@ def main():
         enforce_eager=not args.native_graph,
         async_scheduling=False,
         kernel_config={"moe_backend": "triton"},
-        max_model_len=2048,
-        max_num_batched_tokens=128,
+        max_model_len=args.max_model_len,
+        max_num_batched_tokens=args.max_batched_tokens,
         max_num_seqs=4,
-        kv_cache_memory_bytes=1024**3,
+        kv_cache_memory_bytes=args.kv_gib * 1024**3,
         enable_prefix_caching=True,
         seed=42,
+        generation_config="vllm",
     )
     if args.offload == "uva":
         config.update(cpu_offload_gb=24, cpu_offload_params=["experts"])
@@ -118,8 +125,14 @@ def main():
             offload_params=["experts"],
         )
     if args.cache:
+        accounting = ExpertCacheConfig(slots_per_layer=args.slots).memory_accounting(args.tp)
         config["expert_cache_config"] = dict(
-            enabled=True, slots_per_layer=16, budget_bytes_per_rank=8 * 1024**3 // args.tp
+            enabled=True,
+            slots_per_layer=args.slots,
+            budget_bytes_per_rank=sum(
+                accounting[key]
+                for key in ("resident_bytes", "mapping_bytes", "scratch_bytes", "gpu_staging_bytes")
+            ),
         )
         if args.control_directory:
             config["expert_cache_config"]["control_directory"] = str(args.control_directory)
@@ -160,6 +173,12 @@ def main():
             text=True,
         ),
         "criteria": {"greedy_token_mismatches": 0, "tensor_atol": 0.02, "tensor_rtol": 0.02},
+        "prompt_source": {
+            "path": str(args.prompt_tokens.resolve()),
+            "sha256": hashlib.sha256(args.prompt_tokens.read_bytes()).hexdigest(),
+        }
+        if args.prompt_tokens
+        else None,
         "measurement": {
             "warmup_batches": args.warmup,
             "warmup_requests": args.warmup * args.concurrency,
@@ -217,6 +236,11 @@ def main():
             "Two plus two equals",
             "A binary tree consists of",
         ][: args.concurrency]
+        if args.prompt_tokens:
+            ids = json.loads(args.prompt_tokens.read_text())
+            if not ids or any(type(token) is not int or token < 0 for token in ids):
+                raise ValueError("Qualification prompt must contain nonnegative integer token IDs")
+            prompts = [{"prompt_token_ids": ids} for _ in prompts]
         for _ in range(args.warmup):
             engine.generate(prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
         record["trials"] = []

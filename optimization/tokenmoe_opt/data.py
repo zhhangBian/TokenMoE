@@ -53,6 +53,19 @@ def phase_histograms(positions, experts, prompt, num_experts, *, recent_window=3
     return np.stack(targets), np.stack(recent)
 
 
+def model_identity(profile, template):
+    return {
+        "model_id": profile["model_id"],
+        "weight_revision": profile["revision_hash"],
+        "tokenizer_hash": profile["tokenizer_hash"],
+        "template_id": template["agent_template_id"],
+        "template_version": template["version_hash"],
+        "layers": profile["moe_layer_ids"],
+        "experts": profile["num_routed_experts"],
+        "top_k": profile["top_k"],
+    }
+
+
 def load_runs(roots, *, label_version=LABEL_VERSION):
     samples, identities, summaries, ids = [], set(), [], set()
     entity_ids = set()
@@ -94,16 +107,7 @@ def load_runs(roots, *, label_version=LABEL_VERSION):
             ids.add(rid)
             session = sessions[sid]
             profile = profiles[request["model_profile_id"]]
-            identity = {
-                "model_id": profile["model_id"],
-                "weight_revision": profile["revision_hash"],
-                "tokenizer_hash": profile["tokenizer_hash"],
-                "template_id": session["agent_template_id"],
-                "template_version": session["version_hash"],
-                "layers": profile["moe_layer_ids"],
-                "experts": profile["num_routed_experts"],
-                "top_k": profile["top_k"],
-            }
+            identity = model_identity(profile, session)
             identities.add(json.dumps(identity, sort_keys=True))
             features = request_features(
                 request,

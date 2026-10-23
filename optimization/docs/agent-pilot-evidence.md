@@ -1,0 +1,70 @@
+# Agent pilot and measurement integrity
+
+The first real agent pilot uses Qwen3-30B-A3B BF16, TP2 on physical GPUs 2/3,
+eager Triton, synchronous scheduling, 8 GiB KV per rank, context 32,768,
+maximum scheduled batch 4,096, and the fitted template's temperature 0.6,
+top-p 0.95, top-k 20 and 4,096-token generation budget. Two independent warmup
+requests precede the measured window. Task `astropy__astropy-12907` belongs to
+the explored data; the ten confirmation tasks remain untouched.
+
+Source root commit `4b24d00` and fork `ed375549fc` are frozen in independent
+worktrees at `qwen-agent-pilot-sources-20261023-v1`, under
+`/home/youwei/bzh/dataset/tokenmoe_artifacts`. This lets development proceed
+without editing executing Python files. Precompiled native runtime artifacts
+are retained beside the frozen Python sources.
+
+The run directory is `qwen-agent-pilot-full-n1-20261023-v1`; extracted metrics
+are in `qwen-agent-pilot-full-n1-metrics-20261023-v4` under the same artifact root.
+The source-stability check passed. The metadata-only engine exported 48 actual
+MoE layer identities. A real Podman preflight checked the common boot clock and
+the task's 2-core/4-GiB kernel limits.
+
+| Observed value | Native eager pilot |
+|---|---:|
+| Measured requests, excluding two warmups | 20 |
+| Engine TTFT p95 | 0.3490 s |
+| Required-tool completion to complete client response p95 | 27.1000 s (19 requests) |
+| Endpoint average TPOT p50 | 0.05544 s/token |
+| Measured window | 430.5106 s |
+| Observed output-token throughput | 16.0809 token/s |
+| Sampled measured GPU peaks, rank 0 / rank 1 | 42,333,241,344 / 42,293,395,456 bytes |
+| Simultaneously sampled aggregate GPU peak | 84,626,636,800 bytes |
+| Measured process-tree RSS peak | 7,586,512,896 bytes |
+| Agent terminal outcome | `timeout`, `LimitsExceeded` at 20 steps |
+| Submitted or benchmark-solved tasks | 0 submissions; benchmark score unmeasured |
+
+This is one exploratory task and one repetition, with no cache/predictor policy
+comparison. The observed request p95 values fall below the declared targets in
+this run. They do not establish workload-wide feasibility or successful-task
+throughput. A single task has no task-level confidence interval.
+
+Shutdown exposed a measurement fault: the API default's zero-second shutdown
+deadline and the harness's group-wide SIGTERM could kill EngineCore before the
+token observer wrote its final status. The raw per-request observations are
+retained, but the missing `token-readiness.status.json` makes complete side-channel
+export unverified. The metric output reports that status explicitly as missing.
+Future runs give the API a 30-second shutdown deadline and signal the API parent
+first; forced group termination remains a bounded fallback. A live shutdown check
+is required before treating subsequent cells as complete exports.
+
+`tokenmoe-opt agent-metrics --run RUN --output NEW-DIR` reads the unchanged
+harness records from a metadata-only pilot or a finalized historical collection.
+It checks exact model/template identity, entity uniqueness, clock agreement,
+dependency joins, warmup/measured boundaries and immutable source hashes. It
+retains failed/rejected/truncated requests and task outcomes. It reports engine
+TTFT separately from the nonstreaming client's complete-payload delivery, with
+no invented network first-byte time or interpolated token times. Historical
+inference-finished TPOT is labeled an upper bound. Emissions after the measured
+window do not inflate throughput. Task bootstrap weights whole task groups.
+
+Resource extraction reconstructs simultaneous aggregate peaks from actual
+samples, rather than summing unrelated per-device maxima. Process RSS may count
+shared pages repeatedly. Transfer extraction excludes warmup admissions, retains
+unused-prefetch bytes at the observation boundary, and requires complete detailed
+lifecycles for exact counters. New backend events record one demand-recovery
+duration per microbatch and separate router-to-host synchronization; per-expert
+wait endpoints are not summed into a fictitious exposed stall.
+
+The qualification entry point accepts saved prompt token IDs, larger scheduled
+batches, model context and slot capacities so the real agent prefix can receive
+a matching forced-tensor check and copy calibration before cached policy trials.

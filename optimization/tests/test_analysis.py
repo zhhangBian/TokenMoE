@@ -45,6 +45,7 @@ import tokenmoe_opt.analysis, tokenmoe_opt.cli, tokenmoe_opt.protocol, tokenmoe_
 import tokenmoe_opt.arrival_eval, tokenmoe_opt.planner, tokenmoe_opt.resources
 import tokenmoe_opt.session, tokenmoe_opt.validation
 import tokenmoe_opt.control_run, tokenmoe_opt.controller, tokenmoe_opt.costs, tokenmoe_opt.metrics
+import tokenmoe_opt.agent_metrics
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 
