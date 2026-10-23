@@ -68,7 +68,7 @@ The implementing agent owns local setup, verification, and authorized runs. Thes
 
 ## 9. Expanded workloads and larger models
 
-- [ ] 9.1 Freeze a separate real long-tool protocol with task IDs and duration/early-output/chunk/outcome coverage minima; collect and validate genuine test/build/tool streams while retaining synthetic mechanism tests separately.
+- [x] 9.1 Freeze a separate real long-tool protocol with task IDs and duration/early-output/chunk/outcome coverage minima; collect and validate genuine test/build/tool streams while retaining synthetic mechanism tests separately. The validated view retains 47 complete captures across 12 tasks and one excluded incomplete capture; all frozen minima pass.
 - [ ] 9.2 Implement a generic observed-stream progress predictor and compare it with elapsed-time/history and available explicit progress; evaluate unseen-task calibration, useful lead time, and runtime cost.
 - [ ] 9.3 Evaluate a bounded small-language-model log reader only under a preregistered supported coverage/resource profile; retain a measured-benefit or evidence-based nondeployment decision with its experiment status.
 - [ ] 9.4 Freeze and collect versioned multi-role workflows, paired G2 dependency variants, and held-out G3 templates/role types; enforce event-time visibility and task/template grouping in their analyses.

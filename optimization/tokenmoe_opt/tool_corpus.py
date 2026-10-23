@@ -4,6 +4,7 @@ import concurrent.futures
 import copy
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -493,4 +494,109 @@ def collect(protocol_path, output, *, command):
         executor.shutdown(wait=True, cancel_futures=True)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+    return out.path
+
+
+def report(directory, protocol_path, source_snapshot, output, *, command):
+    directory = Path(directory).resolve()
+    record = read_manifest(directory / "manifest.json", "experiment")
+    protocol = read_manifest(protocol_path, "experiment")
+    if record["identity"] != protocol["identity"]:
+        raise ValueError("Corpus and protocol identities differ")
+    if sha256_file(directory / "protocol.json") != sha256_file(protocol_path):
+        raise ValueError("Corpus protocol differs from the frozen source")
+    if record["status"] != "complete" and record.get("error") != (
+        "RuntimeError: Tool collection has unreleased owned containers"
+    ):
+        raise ValueError("Corpus has an unsupported collection failure")
+    actual_source = source_version(Path(source_snapshot))
+    if (
+        actual_source["files"] != record["source"]["files"]
+        or actual_source["fork_commit"] != record["source"]["fork_commit"]
+    ):
+        raise ValueError("Collector source snapshot changed")
+    names = sorted(
+        {
+            name
+            for error in record.get("cleanup_errors", [])
+            for name in re.findall(r"tokenmoe-ses_[a-zA-Z0-9_]+", error)
+        }
+    )
+    if record.get("cleanup_errors") and not names:
+        raise ValueError("Cleanup failures have no verifiable owned container identity")
+    if names and protocol["runtime"] != "podman":
+        raise ValueError("Cleanup reconciliation currently requires Podman")
+    for name in names:
+        exists = subprocess.run(
+            [*runtime_command("podman"), "container", "exists", name],
+            capture_output=True,
+            timeout=10,
+        )
+        if exists.returncode != 1:
+            raise ValueError(f"Owned container is still present or runtime unavailable: {name}")
+    previous = {r["job_id"]: r for r in json.loads((directory / "tools.json").read_text())}
+    records, incomplete = [], []
+    for job in protocol["jobs"]:
+        case_root = directory / "jobs" / job["job_id"]
+        row = validate_case(case_root, job)
+        if row is None:
+            case = json.loads((case_root / "case.json").read_text())
+            incomplete.append(
+                {
+                    "job_id": job["job_id"],
+                    "task": job["task"],
+                    "source": str(case_root),
+                    "error": case.get("error"),
+                }
+            )
+            continue
+        if row["source_hashes"] != previous[row["job_id"]]["source_hashes"]:
+            raise ValueError("Tool observations changed after original validation")
+        records.append(row)
+    checked = coverage(records, protocol["coverage_minima"])
+    out = Output(output, kind="result", identity=protocol["identity"], command=command)
+    out.write("protocol.json", protocol)
+    out.write("tools.json", records)
+    out.write("coverage.json", checked)
+    out.write(
+        "validation.json",
+        {
+            "source": str(directory),
+            "source_status": record["status"],
+            "source_manifest_sha256": sha256_file(directory / "manifest.json"),
+            "protocol_sha256": sha256_file(protocol_path),
+            "source_snapshot_verified": str(source_snapshot),
+            "reconciled_absent_containers": names,
+            "incomplete_captures": incomplete,
+            "selection": "all complete individually validated original captures; failed capture retained and excluded",
+        },
+    )
+    lines = [
+        "# Validated real test/build streams",
+        "",
+        f"Valid captures: {len(records)}. Incomplete captures retained: {len(incomplete)}.",
+        f"Original collection status: {record['status']}. Source snapshot and raw hashes verified.",
+        "",
+        "| Coverage metric | Actual | Frozen minimum |",
+        "|---|---:|---:|",
+    ]
+    lines.extend(
+        f"| {key} | {checked['actual'][key]} | {minimum} |"
+        for key, minimum in checked["minima"].items()
+    )
+    lines.extend(
+        [
+            "",
+            "The incomplete capture is excluded from model fitting; completed test failures remain included.",
+            "These authored tool workflows provide no solved-agent-task or prefetch-speedup evidence.",
+        ]
+    )
+    (out.path / "report.md").write_text("\n".join(lines) + "\n")
+    out.finish(
+        evidence="validated-real-test-build-corpus",
+        coverage_passed=checked["passed"],
+        valid_tools=len(records),
+        incomplete_tools=len(incomplete),
+        agent_policy_gain_measured=False,
+    )
     return out.path

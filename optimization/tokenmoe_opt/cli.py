@@ -104,8 +104,18 @@ def main(argv=None):
     tool_collect = commands.add_parser("tools-collect")
     tool_collect.add_argument("--protocol", type=Path, required=True)
     tool_collect.add_argument("--output", type=Path, required=True)
+    tool_report = commands.add_parser("tools-report")
+    for name in ("corpus", "protocol", "source-snapshot", "output"):
+        tool_report.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command == "tools-report":
+        from .tool_corpus import report
+
+        print(
+            report(args.corpus, args.protocol, args.source_snapshot, args.output, command=command)
+        )
+        return
     if args.command in {"tools-plan", "tools-collect"}:
         from .tool_corpus import collect, freeze
 

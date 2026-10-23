@@ -1,6 +1,6 @@
 # Real test/build stream protocol
 
-`qwen-long-tools-protocol-20261023-v3` freezes 48 authored commands across
+`qwen-long-tools-protocol-20261023-v4` freezes 48 authored commands across
 12 already explored benchmark tasks. Four jobs per task run the full suite,
 a focused suite, official regression tests and bytecode compilation. The
 protocol selects only instance/base/test metadata columns and requested task
@@ -13,7 +13,9 @@ The actual image digest and original image commit are recorded. A normal
 SWE-bench preparation commit may change executable modes/build configuration;
 the benchmark base object must exist locally. The failed v1/v2 metadata
 attempts are retained: v1 required exact image HEAD equality; v2 did not handle
-Django data-only test patches. Both failed before tool measurement.
+Django data-only test patches. Both failed before tool measurement. The valid
+v3 dry run is superseded by v4 generated from clean frozen source v12 with
+selected Parquet rows and columns.
 
 Two containers run concurrently, each with 2 CPU cores, 4 GiB and no network or
 GPU access. Full/focused/regression/compile deadlines are 180/300/120/90 seconds.
@@ -43,3 +45,20 @@ PY=/home/youwei/bzh/venvs/tokenmoe-harness/bin/python
 Stream progress, elapsed/history and explicit-progress predictors require a
 separate task-held-out evaluation after the actual coverage gate. Small-model
 log reading, multi-role workflows and larger-model execution remain outstanding.
+
+The first corpus run preserves 47 complete captures across all twelve tasks
+and one incomplete Seaborn full-suite capture. The source run exits with a
+cleanup error: timeout protection removes the session container and subsequent
+cleanup treats its automatic removal as a failure. The Podman event history
+confirms kill, exit and removal. Missing-container cleanup is now idempotent;
+the earlier termination-confirmation reason is retained in diagnostics.
+
+`qwen-long-tools-validated-20261023-v1` independently verifies the frozen source,
+original hashes, protocol and all complete captures, and checks that the named
+container is absent. The original failed run remains unchanged. All coverage
+minima pass: 47 valid tools, twelve task groups, ten runs over 30 seconds,
+five over 90 seconds, six uncensored completions over 30 seconds, 33 multi-chunk
+and ten zero-chunk tools, 15 successes, 28 failures and four timeouts. The one
+incomplete capture is retained and excluded. Completed failures include missing
+test dependencies and version compatibility errors; they are not benchmark solve
+labels. The dataset supports an exploratory task-held-out progress study.
