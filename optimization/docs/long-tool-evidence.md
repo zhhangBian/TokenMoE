@@ -62,3 +62,27 @@ and ten zero-chunk tools, 15 successes, 28 failures and four timeouts. The one
 incomplete capture is retained and excluded. Completed failures include missing
 test dependencies and version compatibility errors; they are not benchmark solve
 labels. The dataset supports an exploratory task-held-out progress study.
+
+`qwen-tool-progress-protocol-20261023-v2` freezes model code, nine bounded prefix
+features, eight nearest neighbors with at least four observations, and whole-task
+holdout before scoring. `qwen-tool-progress-evaluation-20261023-v1` evaluates
+281 causal collector-side checkpoints with three methods, retaining censored
+labels, unavailable tails and runtime. This is an offline frozen-training replay;
+external controller receipt is not measured. Generic feature rules were developed
+with corpus examples visible, so the study remains exploratory.
+
+The paired report `qwen-tool-progress-paired-20261023-v1` uses identical decisions
+and jointly nonmissing scores. Observed-stream minus history has point-MAE
+difference +0.107 s (task-bootstrap 95% interval -1.391 to +1.456 s), and
+five-second Brier difference -0.00234 (-0.00704 to +0.00246). Neither establishes
+an error reduction. Finite-interval availability increases by 7.01 percentage
+points, but coverage on jointly available intervals decreases by 0.69 points;
+the unpaired conditional coverage means cannot be interpreted as a paired gain.
+Observed-stream and history each produce 49 correct actionable forecasts with
+no known false alerts, and identical potential lead on jointly scored positives.
+Explicit-progress produces 60 correct and four false alerts.
+
+Prediction CPU wall-time p95 is 0.216 ms for observed-stream versus 0.0446 ms
+for history. No live prefetch or agent-policy gain is measured. The default
+controller retains history; the stream model remains an optional evaluated
+component. Small-model log reading requires its separate resource qualification.

@@ -113,8 +113,16 @@ def main(argv=None):
     progress_eval = commands.add_parser("tools-evaluate")
     progress_eval.add_argument("--protocol", type=Path, required=True)
     progress_eval.add_argument("--output", type=Path, required=True)
+    progress_compare = commands.add_parser("tools-compare")
+    progress_compare.add_argument("--evaluation", type=Path, required=True)
+    progress_compare.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command == "tools-compare":
+        from .tool_progress_compare import compare
+
+        print(compare(args.evaluation, args.output, command=command))
+        return
     if args.command in {"tools-eval-plan", "tools-evaluate"}:
         from .tool_progress_eval import evaluate, freeze
 

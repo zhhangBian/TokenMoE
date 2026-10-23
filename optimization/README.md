@@ -47,6 +47,8 @@ Controllers export every loop body's wall/process-CPU duration in `controller/cy
 
 `tools-plan` and `tools-collect` create a separate real test/build stream corpus using explored task images, official test patches, explicit resource/deadline/coverage minima and byte-validated observations. They do not create routing datasets or claim agent task success. Read [long-tool evidence](docs/long-tool-evidence.md) for the frozen command groups, failure handling and outstanding progress-model evaluation.
 
+`tools-report` independently verifies the complete captures, original hashes, frozen collector snapshot and cleanup state. `tools-eval-plan --corpus VALIDATED-VIEW --output NEW-PLAN` freezes generic stream features, grouped held-task evaluation and runtime/uncertainty metrics; `tools-evaluate --protocol NEW-PLAN/protocol.json --output NEW-RESULT` scores only collector-visible prefixes. `tools-compare --evaluation NEW-RESULT --output NEW-PAIRED` compares jointly available scores on identical decisions, preserving missing forecasts and exploratory status. Controller receipt delay and live prefetch benefit remain unmeasured.
+
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q
 "$PY" -m ruff check optimization collection/tokenmoe_collect/validate.py collection/tests/test_pipeline.py
