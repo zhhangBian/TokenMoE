@@ -47,7 +47,22 @@ def main():
     mode, status, *args = sys.argv[1:]
     path = Path(status)
     if mode == "kill":
-        print(json.dumps({"terminated": terminate(path)}))
+        terminated = terminate(path)
+        result = {"terminated": terminated}
+        if not terminated:
+            if not path.exists():
+                result["reason"] = "process-group record missing"
+            else:
+                identity = json.loads(path.read_text())
+                current = process(identity["pid"])
+                result["reason"] = (
+                    "process identity changed"
+                    if current is not None and current[19] != identity["start"]
+                    else "process group did not become terminal"
+                )
+                result["identity"] = identity
+                result["current_state"] = current
+        print(json.dumps(result))
         return
     if mode != "launch":
         raise ValueError("Unknown container tool operation")

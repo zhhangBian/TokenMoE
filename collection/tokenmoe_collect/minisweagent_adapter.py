@@ -320,8 +320,11 @@ class TracedEnvironment(DockerEnvironment):
         self.pending = {}
         container_id = getattr(self, "container_id", None)
         if container_id is not None and self.runtime != "local":
+            remove = [*self.runtime_argv, "rm", "-f"]
+            if self.runtime == "podman":
+                remove.append("--ignore")
             subprocess.run(
-                [*self.runtime_argv, "rm", "-f", container_id],
+                [*remove, container_id],
                 check=True,
                 capture_output=True,
                 text=True,

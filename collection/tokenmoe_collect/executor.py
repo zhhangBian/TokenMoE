@@ -103,6 +103,7 @@ class StreamingExecutor:
         def stop():
             nonlocal stopped, fatal
             if self.runtime != "local":
+                detail = ""
                 try:
                     result = subprocess.run(
                         container_command("kill"),
@@ -111,9 +112,12 @@ class StreamingExecutor:
                         text=True,
                         timeout=5,
                     )
-                    stopped = json.loads(result.stdout)["terminated"] is True
-                except Exception:
+                    acknowledgement = json.loads(result.stdout)
+                    stopped = acknowledgement["terminated"] is True
+                    detail = json.dumps(acknowledgement) if not stopped else ""
+                except Exception as exc:
                     stopped = False
+                    detail = str(getattr(exc, "stderr", None) or exc)[-2048:]
                 if not stopped:
                     fatal = True
                     cleanup = subprocess.run(
@@ -123,7 +127,7 @@ class StreamingExecutor:
                     )
                     stopped = cleanup.returncode == 0
                     raise RuntimeError(
-                        "Could not confirm tool termination; aborting session container"
+                        f"Could not confirm tool termination ({detail}); aborting session container"
                     )
             if process is not None and process.poll() is None:
                 try:
