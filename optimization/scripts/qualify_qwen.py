@@ -16,6 +16,7 @@ import psutil
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from vllm import LLM, SamplingParams
+from vllm.config.compilation import CompilationConfig
 from vllm.config.expert_cache import ExpertCacheConfig
 
 
@@ -74,6 +75,7 @@ def main():
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--native-graph", action="store_true")
+    parser.add_argument("--piecewise-graph", action="store_true")
     parser.add_argument("--offload", choices=["none", "uva", "prefetch"], default="none")
     parser.add_argument("--slots", type=int, choices=[16, 32, 64, 96, 128], default=16)
     parser.add_argument("--prefill-execution", choices=["tokens", "expert-major"], default="tokens")
@@ -89,6 +91,8 @@ def main():
         parser.error("Warmup must be nonnegative and measured repetitions positive")
     if args.cache and (args.native_graph or args.offload != "none"):
         parser.error("Native graph/offloader references require the cache disabled")
+    if args.native_graph and args.piecewise_graph:
+        parser.error("Choose one graph reference profile")
     if not args.cache and args.prefill_execution != "tokens":
         parser.error("Expert-major prefill requires --cache")
     if (args.control_directory or args.observation != "off") and not args.cache:
@@ -107,7 +111,7 @@ def main():
         model="/home/youwei/bzh/model/Qwen/Qwen3-30B-A3B",
         dtype="bfloat16",
         tensor_parallel_size=args.tp,
-        enforce_eager=not args.native_graph,
+        enforce_eager=not (args.native_graph or args.piecewise_graph),
         async_scheduling=False,
         kernel_config={"moe_backend": "triton"},
         max_model_len=args.max_model_len,
@@ -118,6 +122,21 @@ def main():
         seed=42,
         generation_config="vllm",
     )
+    if args.piecewise_graph:
+        config["compilation_config"] = dict(
+            mode=3,
+            cudagraph_mode="PIECEWISE",
+            cudagraph_copy_inputs=True,
+            splitting_ops=[
+                *CompilationConfig._attention_ops,
+                "vllm::moe_forward",
+                "vllm::moe_forward_shared",
+                "vllm::unified_kv_cache_update",
+                "vllm::unified_mla_kv_cache_update",
+            ],
+            cudagraph_capture_sizes=[1, 2, 4],
+            pass_config={"fuse_attn_quant": False, "enable_sp": False, "fuse_gemm_comms": False},
+        )
     if args.offload == "uva":
         config.update(cpu_offload_gb=24, cpu_offload_params=["experts"])
     elif args.offload == "prefetch":
@@ -138,6 +157,7 @@ def main():
             enabled=True,
             slots_per_layer=args.slots,
             prefill_execution=args.prefill_execution,
+            graph_mode="piecewise" if args.piecewise_graph else "eager",
             scratch_bytes=scratch,
             budget_bytes_per_rank=sum(
                 accounting[key]
@@ -253,6 +273,9 @@ def main():
             prompts = [{"prompt_token_ids": ids} for _ in prompts]
         for _ in range(args.warmup):
             engine.generate(prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
+        record["measurement_start_memory"] = engine.collective_rpc(
+            "get_expert_cache_stats", timeout=60
+        )
         record["trials"] = []
         for repetition in range(args.repetitions):
             began = time.monotonic()
@@ -267,6 +290,24 @@ def main():
                 }
             )
         record["final_memory"] = engine.collective_rpc("get_expert_cache_stats", timeout=60)
+        if args.piecewise_graph:
+            record["piecewise_replay_gate"] = [
+                {
+                    "rank": final["rank"],
+                    "mode": final["cudagraph_mode"],
+                    "captured": final["compilation"]["num_cudagraph_captured"],
+                    "measured_replays": final["compilation"]["num_cudagraph_replayed"]
+                    - initial["compilation"]["num_cudagraph_replayed"],
+                }
+                for initial, final in zip(
+                    record["measurement_start_memory"], record["final_memory"]
+                )
+            ]
+            if any(
+                r["mode"] != "PIECEWISE" or not r["captured"] or not r["measured_replays"]
+                for r in record["piecewise_replay_gate"]
+            ):
+                raise AssertionError("Requested piecewise graph was not actually captured/replayed")
         if args.live_predictor:
             controller_dir = args.output / "controller"
             agent_dir = args.output / "controller-fixture"

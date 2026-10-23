@@ -124,6 +124,14 @@ small batches/decode on the token executor, and requires fresh numerical, TP
 failure and cost qualification. The one-layer algebra prototype is not backend
 qualification. Graph support remains unqualified.
 
+The optional graph profile uses the existing opaque `vllm::moe_forward` boundary
+and compiler piecewise support. Attention and MoE stay outside captured segments;
+dense segments copy changing inputs into persistent graph buffers. Exact cache
+demand recovery remains eager, slot-weight addresses remain fixed, and existing
+readiness/pin events govern reuse. Full capture and compiler passes that erase
+required boundaries are rejected. Actual capture/replay counters and identical
+native/cache compilation settings are required before a performance claim.
+
 ### 7. Integrate at verified fork seams
 
 All paths below are repository-relative. Except the explicitly fork-added recorder, these hook files exist at baseline commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`; implementation must record the actual fork revision and patches.

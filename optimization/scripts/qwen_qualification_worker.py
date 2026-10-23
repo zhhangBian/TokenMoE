@@ -69,8 +69,16 @@ class QwenQualificationWorker:
         return {"rank": self.rank, "armed": self.rank == rank}
 
     def enable_expert_probes(self, directory: str, frames: int = 3):
-        if not self.model_config.enforce_eager or not 1 <= frames <= 8:
-            raise ValueError("Expert probes require eager execution and 1..8 frames")
+        from vllm.config.compilation import CUDAGraphMode
+
+        cc = self.vllm_config.compilation_config
+        split_moe = cc.cudagraph_mode == CUDAGraphMode.PIECEWISE and "vllm::moe_forward" in (
+            cc.splitting_ops or []
+        )
+        if not (self.model_config.enforce_eager or split_moe) or not 1 <= frames <= 8:
+            raise ValueError(
+                "Expert probes require eager or split-MoE piecewise execution and 1..8 frames"
+            )
         destination = Path(directory) / f"rank-{self.rank}"
         destination.mkdir(parents=True, exist_ok=False)
         count = 0

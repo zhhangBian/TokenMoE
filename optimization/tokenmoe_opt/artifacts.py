@@ -15,9 +15,12 @@ MILESTONES = ("analysis", "backend", "local_evaluation", "workload_expansion", "
 
 def cache_execution(config):
     mode, pairs = config.get("prefill_execution", "tokens"), config.get("max_route_pairs", 256)
+    graph = config.get("graph_mode", config.get("graph", "eager"))
     if mode not in {"tokens", "expert-major"} or type(pairs) is not int or not 1 <= pairs <= 1024:
         raise ValueError("Unsupported cache execution profile")
-    return {"prefill_execution": mode, "max_route_pairs": pairs}
+    if graph not in {"eager", "piecewise"}:
+        raise ValueError("Unsupported cache graph execution profile")
+    return {"prefill_execution": mode, "max_route_pairs": pairs, "graph_mode": graph}
 
 
 def digest(value):

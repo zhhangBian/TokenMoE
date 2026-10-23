@@ -27,8 +27,13 @@ def main():
         "max_num_batched_tokens",
         "kv_cache_memory_bytes",
         "kernel_config",
+        "enforce_eager",
+        "async_scheduling",
+        "enable_prefix_caching",
+        "generation_config",
+        "compilation_config",
     ):
-        if native["config"][key] != cached["config"][key]:
+        if native["config"].get(key) != cached["config"].get(key):
             raise ValueError(f"Unmatched execution configuration: {key}")
     if native["criteria"] != cached["criteria"] or native.get("prompt_source") != cached.get(
         "prompt_source"

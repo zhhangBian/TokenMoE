@@ -58,6 +58,8 @@ All TP ranks SHALL agree on logical plan epochs and token-microbatch order while
 
 The initial correctness profile SHALL use eager execution. Qualification SHALL compare unchanged router selections, expert outputs under predeclared numeric tolerances, forced-token execution, and greedy token sequences under matched deterministic schedules. Repeat-baseline variability SHALL be recorded separately. Piecewise graph support SHALL require dedicated buffer-lifetime, changing-residency, and replay-equivalence checks before enablement. A backend SHALL not claim token identity if cache-enabled execution diverges, and tolerances SHALL not be weakened after observing test results.
 
+An opt-in piecewise profile SHALL use the V2 runner, explicit piecewise compilation/capture, copied persistent graph inputs, and splitting of opaque MoE and attention operations. Full capture, attention fusion or sequence-parallel passes that remove those boundaries SHALL be rejected before loading. The CPU router-demand/cache work SHALL remain outside captured segments. Qualification SHALL record actual capture and measured replay counts rather than inferring graph use from requested settings; the matched native reference SHALL use the same splitting/capture configuration.
+
 #### Scenario: A graph replays after slots change
 - **WHEN** a graph-enabled profile changes resident expert identities between replays
 - **THEN** qualification verifies current mappings and valid persistent buffers against eager results before that profile is allowed in performance claims

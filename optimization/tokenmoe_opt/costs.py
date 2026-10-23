@@ -41,6 +41,8 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
         "generation_config", "auto"
     ):
         raise ValueError("Cost fitting configurations differ: generation_config")
+    if native["config"].get("compilation_config") != cached["config"].get("compilation_config"):
+        raise ValueError("Cost fitting configurations differ: compilation_config")
     model_path = Path(cached["config"]["model"])
     metadata = model_path / ".cache/huggingface/download/config.json.metadata"
     config_path, tokenizer_path = model_path / "config.json", model_path / "tokenizer.json"
@@ -139,6 +141,7 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
             "version": "copy-recovery-v1",
             "measured": True,
             "cache_execution": cache_execution(cached["config"]["expert_cache_config"]),
+            "compilation_config": cached["config"].get("compilation_config"),
             "model_hash": cached["final_memory"][0]["model_hash"],
             "device_uuids": [d["uuid"] for d in cached["resources"]["metadata"]["devices"]],
             "copy_seconds": float(np.percentile(durations, 90)),
