@@ -89,6 +89,8 @@ class Transfers:
         self.recovery_ns = self.sync_ns = 0
         self.recovery_samples = self.sync_samples = 0
         self.prefetched = {}
+        self.prefetch_started = self.prefetch_used = 0
+        self.inflight = set()
         self.window = window
         self.admitted = set()
 
@@ -111,16 +113,19 @@ class Transfers:
         if kind == "load_start":
             self.started += event["bytes"]
             self.admitted.add(key)
+            self.inflight.add(key)
             if event["trigger"] == "prefetch":
                 self.prefetched[key] = event["bytes"]
+                self.prefetch_started += event["bytes"]
         elif kind == "load_complete":
             if self.window is not None and key not in self.admitted:
                 return
             self.admitted.discard(key)
+            self.inflight.discard(key)
             self.completed += 1
             self.device_ns += event["device_duration_ns"]
         elif kind == "use":
-            self.prefetched.pop(key, None)
+            self.prefetch_used += self.prefetched.pop(key, 0)
         elif kind == "eviction":
             self.evicted_unused += self.prefetched.pop(key, 0)
 
@@ -152,9 +157,27 @@ def cache_metrics(observations, *, window=None):
                 "evicted_unused_prefetch_bytes": accumulator.evicted_unused
                 if validation["exact_replay_available"]
                 else None,
-                "resident_unused_prefetch_bytes_at_end": sum(accumulator.prefetched.values())
+                "prefetch_bytes_started": accumulator.prefetch_started
                 if validation["exact_replay_available"]
                 else None,
+                "used_prefetch_bytes": accumulator.prefetch_used
+                if validation["exact_replay_available"]
+                else None,
+                "resident_unused_prefetch_bytes_at_end": sum(
+                    size
+                    for key, size in accumulator.prefetched.items()
+                    if key not in accumulator.inflight
+                )
+                if validation["exact_replay_available"]
+                else None,
+                "inflight_unused_prefetch_bytes_at_end": sum(
+                    size
+                    for key, size in accumulator.prefetched.items()
+                    if key in accumulator.inflight
+                )
+                if validation["exact_replay_available"]
+                else None,
+                "prefetch_cohort": "admitted inside the measurement window; first use counted once",
                 "counter_coverage": "complete"
                 if validation["exact_replay_available"]
                 else "incomplete-or-compact",

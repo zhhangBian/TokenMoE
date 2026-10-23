@@ -95,6 +95,8 @@ Cache observer configuration optionally records `mapping_mode=host-resolved`. Th
 
 The observer exports `export_capacity` in its configuration and `capacity` in final status. The measured host-path revision uses at most 16,384 admitted records per writer, batches at most 64 records, and retains a 10-ms idle flush target. Admission never blocks on a slow consumer; drops and export errors continue to invalidate exact reconstruction and cost fitting.
 
+Windowed optimization metrics track the cohort of prefetches admitted inside that window. `prefetch_bytes_started` and `used_prefetch_bytes` count admission and first observed use; unused ready bytes and unused in-flight bytes at the boundary are separate. A copy issued before the boundary but not yet observed complete is not reported as resident-ready storage. These cohort counters do not include speculative transfers admitted before the window.
+
 ```text
 model_profile_id
 model_id, revision_hash, architecture

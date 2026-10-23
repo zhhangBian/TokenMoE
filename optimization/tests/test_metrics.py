@@ -318,6 +318,21 @@ def test_transfer_windows_exclude_warmup_copies_and_do_not_sum_individual_miss_w
     assert metrics.started == 20 and metrics.device_ns == 0
     assert metrics.recovery_ns == 150
     assert metrics.evicted_unused == 0 and sum(metrics.prefetched.values()) == 20
+    assert metrics.prefetch_started == 20 and metrics.prefetch_used == 0
+    assert set(metrics.prefetched) <= metrics.inflight
+    metrics.observe(
+        {
+            **common,
+            "kind": "load_complete",
+            "generation": 2,
+            "source_at": 290,
+            "device_duration_ns": 30,
+        }
+    )
+    assert not set(metrics.prefetched) & metrics.inflight
+    metrics.observe({**common, "kind": "use", "generation": 2, "source_at": 295})
+    metrics.observe({**common, "kind": "use", "generation": 2, "source_at": 296})
+    assert metrics.prefetch_used == 20 and not metrics.prefetched
 
 
 def test_resource_peak_uses_simultaneous_samples_and_actual_measurement_window(tmp_path):
