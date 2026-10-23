@@ -50,6 +50,7 @@ import tokenmoe_opt.replay_cache, tokenmoe_opt.timing, tokenmoe_opt.calibration
 import tokenmoe_opt.agent_compare
 import tokenmoe_opt.tool_corpus
 import tokenmoe_opt.tool_progress, tokenmoe_opt.tool_progress_eval
+import tokenmoe_opt.tool_progress_compare, tokenmoe_opt.log_reader
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 

@@ -116,8 +116,16 @@ def main(argv=None):
     progress_compare = commands.add_parser("tools-compare")
     progress_compare.add_argument("--evaluation", type=Path, required=True)
     progress_compare.add_argument("--output", type=Path, required=True)
+    reader_plan = commands.add_parser("tools-reader-plan")
+    for name in ("corpus", "evaluation", "model", "output"):
+        reader_plan.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args(argv)
     command = ["tokenmoe-opt", *(sys.argv[1:] if argv is None else argv)]
+    if args.command == "tools-reader-plan":
+        from .log_reader import prepare
+
+        print(prepare(args.corpus, args.evaluation, args.model, args.output, command=command))
+        return
     if args.command == "tools-compare":
         from .tool_progress_compare import compare
 
