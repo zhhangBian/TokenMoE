@@ -152,9 +152,10 @@ Cost fitting rejects unequal KV/graph/scheduler configurations and verifies the
 current checkpoint revision and tokenizer hash against the predictor identity.
 Held-out propagated timing calibration remains outstanding.
 
-Formal agent execution also requires resolving the sampling/template identity:
-historical predictors use temperature 0.6, top-p 0.95 and top-k 20; protocol v3
-currently declares temperature 0. Reusing those predictors under a new template
-version is rejected by the controller. The requested choice is to retain the
-historical sampling or collect separate temperature-zero training data. No
-formal task comparison has started while this choice is pending.
+Protocol v3 incorrectly preset temperature 0 while the historical predictor's
+template includes temperature 0.6, top-p 0.95 and top-k 20. This self-imposed
+choice caused an unnecessary pause before formal comparisons. Protocol v4 reads
+sampling directly from the SHA-256-verified training role records, retaining the
+4096-token budget and declared latency targets. Historical protocols remain
+unmodified. Greedy sampling remains the backend correctness diagnostic. No
+formal comparison is claimed from the short cost runs above.

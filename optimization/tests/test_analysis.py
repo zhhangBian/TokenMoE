@@ -220,13 +220,15 @@ def test_output_reuse_is_rejected_and_failed_runs_keep_evidence(tmp_path):
 
 
 def test_protocol_requires_disjoint_confirmation_and_preserves_agent_budget():
+    sampling = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_tokens": 4096}
     with pytest.raises(ValueError, match="required"):
-        local_protocol({"model": "qwen"}, ["explored"], [])
+        local_protocol({"model": "qwen"}, ["explored"], [], sampling=sampling)
     with pytest.raises(ValueError, match="overlap"):
-        local_protocol({"model": "qwen"}, ["explored"], ["explored"])
-    protocol = local_protocol({"model": "qwen"}, ["explored"], ["untouched"])
+        local_protocol({"model": "qwen"}, ["explored"], ["explored"], sampling=sampling)
+    protocol = local_protocol({"model": "qwen"}, ["explored"], ["untouched"], sampling=sampling)
     assert protocol["untouched_confirmation_tasks"] == ["untouched"]
     assert protocol["sampling"]["max_tokens"] == 4096
+    assert protocol["sampling"]["temperature"] == 0.6
     assert protocol["latency_targets"]["tools_to_complete_response_p95_seconds"] == 30
     assert protocol["measured_repetitions"] >= 3
     assert protocol["devices"] == [2, 3]

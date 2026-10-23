@@ -150,7 +150,7 @@ def main(argv=None):
         )
         return
     if args.command == "plan":
-        from .protocol import local_protocol
+        from .protocol import local_protocol, training_sampling
 
         inputs = read_manifest(args.inputs, "input")
         # Split artifact has the authoritative task groups, not paths/replica IDs.
@@ -160,7 +160,12 @@ def main(argv=None):
         confirmation = read_manifest(args.confirmation_split, "split")
         if confirmation["identity"] != inputs["identity"]:
             raise ValueError("Confirmation and input identities differ")
-        protocol = local_protocol(inputs["identity"], splits["groups"], confirmation["groups"])
+        protocol = local_protocol(
+            inputs["identity"],
+            splits["groups"],
+            confirmation["groups"],
+            sampling=training_sampling(inputs),
+        )
         protocol["confirmation_source"] = {
             "path": str(args.confirmation_split.resolve()),
             "sha256": sha256_file(args.confirmation_split),
