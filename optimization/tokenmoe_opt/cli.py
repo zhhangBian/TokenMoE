@@ -26,6 +26,7 @@ def main(argv=None):
     analysis.add_argument("--tune", action="store_true")
     plan = commands.add_parser("plan")
     plan.add_argument("--inputs", type=Path, required=True)
+    plan.add_argument("--confirmation-split", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
     arrivals = commands.add_parser("arrivals")
     arrivals.add_argument("--inputs", type=Path, required=True)
@@ -156,8 +157,17 @@ def main(argv=None):
         splits = read_manifest(args.inputs.parent / "splits.json", "split")
         if splits["identity"] != inputs["identity"]:
             raise ValueError("Split and input identities differ")
+        confirmation = read_manifest(args.confirmation_split, "split")
+        if confirmation["identity"] != inputs["identity"]:
+            raise ValueError("Confirmation and input identities differ")
+        protocol = local_protocol(inputs["identity"], splits["groups"], confirmation["groups"])
+        protocol["confirmation_source"] = {
+            "path": str(args.confirmation_split.resolve()),
+            "sha256": sha256_file(args.confirmation_split),
+            "selection": confirmation.get("selection"),
+        }
         out = Output(args.output, kind="experiment", identity=inputs["identity"], command=command)
-        out.write("protocol.json", local_protocol(inputs["identity"], splits["groups"]))
+        out.write("protocol.json", protocol)
         out.finish(protocol_status="preregistered-unexecuted")
     else:
         from .replay import CopyCost, replay

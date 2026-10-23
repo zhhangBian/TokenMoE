@@ -11,10 +11,11 @@ CUDA_VISIBLE_DEVICES=2,3 "$PY" -m tokenmoe_opt analyze \
   --run "$DATA/qwen3-runtime-20261019-063626/collection/N4/attempt-01/N4" \
   --label-version command-outcome-v1 --output "$DATA/NEW-screening-run"
 "$PY" -m tokenmoe_opt plan --inputs "$DATA/NEW-screening-run/inputs.json" \
+  --confirmation-split "$DATA/NEW-confirmation-split.json" \
   --output "$DATA/NEW-protocol-run"
 ```
 
-Every output directory must be new. Use `shell-command-v2` in a separate run for conservative executable-word categories. Optional `--tune` tunes history mixture weights using training-only inner task folds; fixed screening uses 0.5. All N1/N4/pilot/recovery copies remain grouped by task. Current local tasks are exploratory; untouched confirmation groups remain outstanding.
+Every output directory must be new. Use `shell-command-v2` in a separate run for conservative executable-word categories. Optional `--tune` tunes history mixture weights using training-only inner task folds; fixed screening uses 0.5. All N1/N4/pilot/recovery copies remain grouped by task. `plan` requires a split manifest with matching identity and nonempty untouched `groups` disjoint from exploration. Record the dataset hash and selection rule in its `selection` field; confirmation tasks stay outside fitting and policy selection.
 
 Outputs include input SHA-256, read-only validation, model/weight/tokenizer/template identity, source hashes, split groups, fitted per-fold priors, feature/provenance records, per-request coverage, task bootstrap intervals, layer/transition subgroups, and tool increments against history+global and history+stage. Empty targets are null with a reason. `first32_decode` counts computed positions and does not measure TTFT. Hindsight uses target routes and cannot be deployed.
 
@@ -27,6 +28,8 @@ Outputs include input SHA-256, read-only validation, model/weight/tokenizer/temp
 The optional collection flag `control_events: true` exports bounded live control records without changing agent prompts or tool observations. `SessionState.receive` records controller receipt; gaps suppress predictions until an observed snapshot, duplicate events are idempotent, terminal sessions remain terminal, and sequential/parallel joins require every dependency. No harness module imports vLLM. The cost-aware planner accepts explicit model-specific distributions, token volumes, arrival/service probabilities and actual scheduler/session states, with atomic per-rank and shared-link reservations.
 
 The default-off Python cache and diagnostic commands are described in [backend evidence](docs/backend-evidence.md). `fit-costs` requires a matching native/cache pair, complete detailed events and exact model/device identities. `control` requires a frozen predictor with training-task provenance, validated duration-training sources, measured compatible costs, client events, engine scheduling/readiness events, compact feedback and fresh worker snapshots. It rejects training-task sessions. Worker delivery uses private local datagram mailboxes with bounded plans and five-second leases; demand always takes priority. `diagnostic-metrics` reports actual token observation points, transfers and sampled resources, keeping missing or partial fields explicit. These commands do not establish a controlled policy gain or calibrated timing simulation.
+
+`optimization/scripts/qualify_qwen.py` supports fixed warmup and repetition counts plus native graph, UVA and layer-prefetch references. Keep eight-token diagnostics separate from the 4096-token agent protocol. `optimization/scripts/summarize_qualification.py --run NATIVE --run CACHE --output NEW-DIR` validates matching runtime sources, devices, KV/scheduler settings, warmup/repetitions and greedy outputs before writing a short-cost comparison. It labels aggregate cache counters as whole-engine measurements, including warmup. The current cache's short-trial costs exceed native and UVA; the evidence document retains these negative results.
 
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 "$PY" -m pytest optimization/tests collection/tests -q

@@ -70,10 +70,18 @@ def main():
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--stress", action="store_true")
     parser.add_argument("--concurrency", type=int, choices=[1, 2, 4], default=2)
+    parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--native-graph", action="store_true")
+    parser.add_argument("--offload", choices=["none", "uva", "prefetch"], default="none")
     parser.add_argument("--live-predictor", type=Path)
     parser.add_argument("--live-inputs", type=Path)
     parser.add_argument("--live-costs", type=Path)
     args = parser.parse_args()
+    if args.warmup < 0 or args.repetitions < 1:
+        parser.error("Warmup must be nonnegative and measured repetitions positive")
+    if args.cache and (args.native_graph or args.offload != "none"):
+        parser.error("Native graph/offloader references require the cache disabled")
     if (args.control_directory or args.observation != "off") and not args.cache:
         parser.error("Expert observation and control mailboxes require --cache")
     if args.stress and (not args.cache or args.tp != 2):
@@ -90,7 +98,7 @@ def main():
         model="/home/youwei/bzh/model/Qwen/Qwen3-30B-A3B",
         dtype="bfloat16",
         tensor_parallel_size=args.tp,
-        enforce_eager=True,
+        enforce_eager=not args.native_graph,
         async_scheduling=False,
         kernel_config={"moe_backend": "triton"},
         max_model_len=2048,
@@ -100,6 +108,15 @@ def main():
         enable_prefix_caching=True,
         seed=42,
     )
+    if args.offload == "uva":
+        config.update(cpu_offload_gb=24, cpu_offload_params=["experts"])
+    elif args.offload == "prefetch":
+        config.update(
+            offload_group_size=8,
+            offload_num_in_group=7,
+            offload_prefetch_step=1,
+            offload_params=["experts"],
+        )
     if args.cache:
         config["expert_cache_config"] = dict(
             enabled=True, slots_per_layer=16, budget_bytes_per_rank=8 * 1024**3 // args.tp
@@ -143,6 +160,14 @@ def main():
             text=True,
         ),
         "criteria": {"greedy_token_mismatches": 0, "tensor_atol": 0.02, "tensor_rtol": 0.02},
+        "measurement": {
+            "warmup_batches": args.warmup,
+            "warmup_requests": args.warmup * args.concurrency,
+            "warmup_excluded": True,
+            "measured_repetitions": args.repetitions,
+            "generation_budget": 8,
+            "scope": "short backend cost diagnostic; no agent service evidence",
+        },
         "limits": "Not full qualification: forced-token/router/cancellation/TP failure checks outstanding",
     }
 
@@ -192,8 +217,10 @@ def main():
             "Two plus two equals",
             "A binary tree consists of",
         ][: args.concurrency]
+        for _ in range(args.warmup):
+            engine.generate(prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
         record["trials"] = []
-        for repetition in range(2):
+        for repetition in range(args.repetitions):
             began = time.monotonic()
             outputs = engine.generate(
                 prompts, SamplingParams(temperature=0, max_tokens=8), use_tqdm=False

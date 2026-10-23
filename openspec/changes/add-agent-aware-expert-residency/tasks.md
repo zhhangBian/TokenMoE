@@ -29,9 +29,9 @@ The implementing agent owns local setup, verification, and authorized runs. Thes
 - [x] 4.2 Implement deterministic capacity-fitting token microbatches, original top-k/coefficient preservation, output scattering, and reload accounting; verify prefill and batched decode whose expert union exceeds capacity.
 - [x] 4.3 Coordinate TP plan epochs and microbatch order with rank-local readiness; verify delayed shards, duplicate demand, peer failure, and bounded shutdown without background-thread collectives.
 - [x] 4.4 Add compact request/layer/phase feedback independent of full trace capture and implement cache/transfer and token-readiness observation modes with explicit loss accounting and asynchronous writing.
-- [ ] 4.5 Run the relevant CPU checks and verify the fork still installs with `VLLM_USE_PRECOMPILED=1`; retain Python-only source changes and record the fork revision/patches.
+- [x] 4.5 Run the relevant CPU checks and verify the fork still installs with `VLLM_USE_PRECOMPILED=1`; retain Python-only source changes and record the fork revision/patches.
 - [x] 4.6 Recheck actual local resources and run small Qwen TP1/TP2 eager qualification: CPU-first startup peak, forced-token tensors, real routing, greedy outputs, demand misses, overflow, cancellation, and shutdown under fixed numeric criteria.
-- [ ] 4.7 Record cache-off and repeated-baseline behavior, observer cost, demand synchronization, copy/compute cost, and native graph-enabled full-resident performance; do not proceed with a configuration that fails correctness.
+- [x] 4.7 Record cache-off and repeated-baseline behavior, observer cost, demand synchronization, copy/compute cost, and native graph-enabled full-resident performance; do not proceed with a configuration that fails correctness.
 
 ## 5. Live agent events and arrival estimates
 
@@ -46,14 +46,14 @@ The implementing agent owns local setup, verification, and authorized runs. Thes
 - [x] 6.2 Implement the measured-cost planner, existing-residency preference, displacement accounting, churn limits, demand priority, and per-rank/shared-link resource ledgers; verify speculative limits are enforced.
 - [x] 6.3 Add bounded worker plan mailboxes and worker-owned asynchronous copy streams independent of model RPC; verify a real prefetch starts during an idle tool interval before the next request arrives.
 - [x] 6.4 Implement plan expiry, controller-disconnect fallback, in-flight-copy resolution, and rollback to demand-only execution; verify live fallback never assumes enough memory for full residency.
-- [ ] 6.5 Integrate observable KV transfer reservations when supported; otherwise explicitly label arbitration unavailable and provide the separate contention-experiment configuration without changing KV eviction.
+- [x] 6.5 Integrate observable KV transfer reservations when supported; otherwise explicitly label arbitration unavailable and provide the separate contention-experiment configuration without changing KV eviction.
 
 ## 7. Replay and measurement integrity
 
 - [ ] 7.1 Implement frozen-timeline replay using unique batch/layer expert demand, finite capacity/bandwidth, in-flight state, replacement, prefill microbatches, and an explicit recompute policy; reject unsupported missing routes.
 - [ ] 7.2 Implement measured cost profiles and timing simulation that propagates delays through model work, tool starts, dependency joins, and request returns; mark uncalibrated output as diagnostic.
 - [ ] 7.3 Validate simulation on held-out live executions and report error for bytes, cache events, and timing separately; verify it cannot use miss-delayed timestamps as extra prefetch lead.
-- [ ] 7.4 Implement event/feature validators, initial residency reconstruction, transfer and slot-generation checks, and incomplete-trace handling; preserve original dataset validation behavior.
+- [x] 7.4 Implement event/feature validators, initial residency reconstruction, transfer and slot-generation checks, and incomplete-trace handling; preserve original dataset validation behavior.
 - [ ] 7.5 Implement metric extraction for true observation points, task outcomes, warmup/repetition boundaries, memory peaks, and uncertainty; distinguish engine token emission from batched client delivery.
 
 ## 8. Controlled local comparisons

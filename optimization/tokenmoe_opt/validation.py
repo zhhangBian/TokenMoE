@@ -73,16 +73,29 @@ def validate_cache_events(records, *, status=None, expected_layers=None):
                 fail("snapshot slot identities are not unique and contiguous")
             if "memory" in event:
                 values = event["memory"]
-                if any(not isinstance(value, int) or value < 0 for value in values.values()):
+                required = {
+                    "resident_bytes",
+                    "host_pageable_bytes",
+                    "host_pinned_staging_bytes",
+                    "mapping_bytes",
+                    "gpu_staging_bytes",
+                }
+                valid = required <= values.keys() and all(
+                    type(value) is int and value >= 0 for value in values.values()
+                )
+                if not valid:
                     fail("invalid byte accounting")
-                expert_bytes = values["host_pageable_bytes"] // 128
-                if (
-                    values["resident_bytes"] != expert_bytes * len(slot_ids)
-                    or values["host_pinned_staging_bytes"] != expert_bytes
-                    or values["mapping_bytes"] != 128 * 8
-                ):
-                    fail("resident/staging/mapping byte accounting differs from expert layout")
-                memory[stream][layer] = values
+                else:
+                    expert_bytes, remainder = divmod(values["host_pageable_bytes"], 128)
+                    if (
+                        remainder
+                        or not expert_bytes
+                        or values["resident_bytes"] != expert_bytes * len(slot_ids)
+                        or values["host_pinned_staging_bytes"] != expert_bytes
+                        or values["mapping_bytes"] != 128 * 8
+                    ):
+                        fail("resident/staging/mapping byte accounting differs from expert layout")
+                    memory[stream][layer] = values
             for slot in event["slots"]:
                 slots[(*stream, layer, slot["slot"])] = {
                     **slot,

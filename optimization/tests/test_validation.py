@@ -95,6 +95,35 @@ def test_serialized_events_may_have_delayed_independent_observation_times():
     assert not validate_cache_events(rows, status=status())["passed"]
 
 
+def test_cache_memory_reconstruction_checks_layout_and_rank_scratch_budget():
+    rows = events()
+    rows[0]["memory"] = {
+        "host_pageable_bytes": 128 * 1024,
+        "resident_bytes": 1024,
+        "host_pinned_staging_bytes": 1024,
+        "mapping_bytes": 1024,
+        "gpu_staging_bytes": 0,
+    }
+    rows.append(
+        {
+            **rows[-1],
+            "kind": "observer_config",
+            "event_id": "config",
+            "sequence": 7,
+            "mode": "detailed",
+            "budget_bytes_per_rank": 2112,
+            "scratch_bytes": 64,
+        }
+    )
+    assert validate_cache_events(rows, status=status())["passed"]
+    rows[-1]["budget_bytes_per_rank"] -= 1
+    assert not validate_cache_events(rows, status=status())["passed"]
+    del rows[0]["memory"]["resident_bytes"]
+    assert "invalid byte accounting" in " ".join(
+        validate_cache_events(rows, status=status())["errors"]
+    )
+
+
 def test_feature_validator_rejects_receipt_and_future_history_leaks():
     record = {
         "request": "r",

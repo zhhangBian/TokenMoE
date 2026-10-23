@@ -110,3 +110,31 @@ def test_shared_budget_prefers_greater_gain_across_layers():
         max_churn=1,
     )
     assert result["transfers"] == [{"layer": 1, "expert": 1}]
+
+
+def test_full_inflight_ledger_still_allows_joining_an_existing_transfer():
+    resources = ledger(inflight={(0, 1, 1), (1, 1, 1)})
+    resources.speculative_inflight_limit = 2
+    result = plan(
+        np.array([[0.01, 10.0], [0.01, 1.0]]),
+        identity="q",
+        epoch=5,
+        now_ns=10,
+        expiry_ns=100,
+        capacity=1,
+        resident={0: {0}, 1: {0}},
+        pinned={},
+        demand={},
+        residency_epoch={(0, 0): 1, (1, 0): 1},
+        ledger=resources,
+        cost_profile={
+            "identity": "q",
+            "version": "test-only",
+            "measured": True,
+            "copy_seconds": 0.01,
+            "demand_wait_seconds": 1,
+        },
+    )
+    assert result["transfers"] == [{"layer": 1, "expert": 1}]
+    assert result["reserved_rank_bytes"] == 0
+    assert result["decisions"][0]["reason"] == "joined_existing_transfer"

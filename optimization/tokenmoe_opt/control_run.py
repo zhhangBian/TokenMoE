@@ -87,7 +87,7 @@ def run(
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     tails, last, snapshots = Tails(), None, []
-    engine_id, decisions, renewals, sends = None, 0, 0, 0
+    engine_id, decisions, sends = None, 0, 0
     started = time.monotonic()
 
     def send(decision):
@@ -148,41 +148,6 @@ def run(
                     )
                 ):
                     decision, last = cancel(), None
-                elif (
-                    last is not None
-                    and (controller.running or controller.waiting)
-                    and not controller.engine_uncertain
-                ):
-                    active = {
-                        controller.feedback.aliases.get(rid)
-                        for rid in controller.running | controller.waiting
-                    }
-                    sessions = {
-                        controller.feedback.client_requests[a]["session"]
-                        for a in active
-                        if a in controller.feedback.client_requests
-                        and "observed" not in controller.feedback.client_requests[a]
-                    }
-                    sessions = {
-                        sid
-                        for sid in sessions
-                        if sid in controller.sessions.states
-                        and controller.sessions.decision(sid, decision_at=now())[
-                            "predictive_demand"
-                        ]
-                    }
-                    predicted = {source["session"] for source in last["sources"]}
-                    if sessions & predicted:
-                        controller.epoch += 1
-                        decision = {
-                            **last,
-                            "epoch": controller.epoch,
-                            "created_at": now(),
-                            "expires_at": now() + 5_000_000_000,
-                            "transfers": [],
-                            "reason": "active-request preference renewal; no speculative copies",
-                        }
-                        renewals += 1
                 if decision is not None and snapshots:
                     delivered = send(decision)
                     sends += len(delivered)
@@ -197,7 +162,8 @@ def run(
         out.finish(
             evidence="live-controller-diagnostic",
             decisions=decisions,
-            renewals=renewals,
+            renewals=0,
+            active_plan_policy="original lease expires; fresh idle prediction required to renew",
             delivered_rank_plans=sends,
             rejected_training_sessions=sorted(controller.rejected_sessions),
             policy_comparison_status="unqualified: held-out controlled service evaluation outstanding",

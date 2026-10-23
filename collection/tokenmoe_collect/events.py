@@ -27,8 +27,12 @@ def project(states, kind, fields):
     if state["terminal"]:
         return
     if kind == "session_started":
-        state.update(identity=fields.get("identity"), status="active", unknown=False,
-                     task=fields.get("benchmark_item_id"))
+        state.update(
+            identity=fields.get("identity"),
+            status="active",
+            unknown=False,
+            task=fields.get("benchmark_item_id"),
+        )
     elif kind in {"session_ended", "session_cancelled"}:
         state.update(
             terminal=True, status=fields.get("status", "cancelled"), tools={}, dependencies=[]

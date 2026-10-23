@@ -44,6 +44,7 @@ sys.meta_path.insert(0, BlockGPU())
 import tokenmoe_opt.analysis, tokenmoe_opt.cli, tokenmoe_opt.protocol, tokenmoe_opt.replay
 import tokenmoe_opt.arrival_eval, tokenmoe_opt.planner, tokenmoe_opt.resources
 import tokenmoe_opt.session, tokenmoe_opt.validation
+import tokenmoe_opt.control_run, tokenmoe_opt.controller, tokenmoe_opt.costs, tokenmoe_opt.metrics
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 
@@ -218,9 +219,15 @@ def test_output_reuse_is_rejected_and_failed_runs_keep_evidence(tmp_path):
         read_manifest(tmp_path / "invalid.json", "input")
 
 
-def test_protocol_separates_exploration_from_missing_confirmation():
-    protocol = local_protocol({"model": "qwen"}, ["explored"])
-    assert protocol["untouched_confirmation_tasks"] == []
+def test_protocol_requires_disjoint_confirmation_and_preserves_agent_budget():
+    with pytest.raises(ValueError, match="required"):
+        local_protocol({"model": "qwen"}, ["explored"], [])
+    with pytest.raises(ValueError, match="overlap"):
+        local_protocol({"model": "qwen"}, ["explored"], ["explored"])
+    protocol = local_protocol({"model": "qwen"}, ["explored"], ["untouched"])
+    assert protocol["untouched_confirmation_tasks"] == ["untouched"]
+    assert protocol["sampling"]["max_tokens"] == 4096
+    assert protocol["latency_targets"]["tools_to_complete_response_p95_seconds"] == 30
     assert protocol["measured_repetitions"] >= 3
     assert protocol["devices"] == [2, 3]
     assert all(status == "outstanding" for status in protocol["milestones"].values())

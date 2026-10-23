@@ -118,12 +118,18 @@ def plan(
     if (expected < 0).any() or not np.isfinite(expected).all():
         raise ValueError("Expected demand must be finite and nonnegative")
     desired, decisions, transfers = {}, [], []
-    protected, stable, current, candidates = {}, {}, {}, []
+    protected, stable, current, candidates, victims = {}, {}, {}, [], {}
+    rejected = Counter()
     quanta = np.maximum(1, expected.sum(axis=-1, keepdims=True) / capacity)
     benefits = (
         quanta * (1 - np.exp(-expected / quanta)) * cost_profile["demand_wait_seconds"] * confidence
     )
     exposed_copy = cost_profile["copy_seconds"] * (1 - cost_profile.get("hide_probability", 0))
+
+    def victim_for(layer):
+        available = desired[layer] - protected[layer] - stable[layer]
+        return min(available, key=lambda e: (benefits[layer, e], -e)) if available else None
+
     for layer, values in enumerate(expected):
         current[layer] = set(resident.get(layer, ()))
         protected[layer] = set(pinned.get(layer, ())) | set(demand.get(layer, ()))
@@ -140,21 +146,27 @@ def plan(
             if not evictable:
                 raise ValueError("Pinned experts leave no feasible demand allocation")
             desired[layer].remove(min(evictable, key=lambda e: (benefits[layer, e], -e)))
+        victims[layer] = victim_for(layer) if len(desired[layer]) >= capacity else None
         for expert, volume in enumerate(values):
             if volume > 0 and expert not in desired[layer] and expert not in current[layer]:
-                heapq.heappush(
-                    candidates, (-(benefits[layer, expert] - exposed_copy), layer, expert)
-                )
-    rejected = Counter()
+                victim = victims[layer]
+                if victim is None and len(desired[layer]) >= capacity:
+                    rejected["protected_slots"] += 1
+                    continue
+                displaced = benefits[layer, victim] if victim is not None else 0
+                gain = benefits[layer, expert] - displaced - exposed_copy
+                if gain > 0:
+                    heapq.heappush(candidates, (-gain, layer, expert))
+                else:
+                    rejected["nonpositive_gain"] += 1
     while candidates and len(transfers) < max_churn:
         upper, layer, expert = heapq.heappop(candidates)
         victim = None
         if len(desired[layer]) >= capacity:
-            evictable = desired[layer] - protected[layer] - stable[layer]
-            if not evictable:
+            victim = victims[layer]
+            if victim is None:
                 rejected["protected_slots"] += 1
                 continue
-            victim = min(evictable, key=lambda e: (benefits[layer, e], -e))
         displaced = benefits[layer, victim] if victim is not None else 0
         gain = benefits[layer, expert] - displaced - exposed_copy
         if gain <= 0:
@@ -170,6 +182,7 @@ def plan(
                 desired[layer].remove(victim)
             desired[layer].add(expert)
             stable[layer].add(expert)
+            victims[layer] = victim_for(layer)
             transfers.append({"layer": layer, "expert": expert})
             decisions.append(
                 {
@@ -182,6 +195,21 @@ def plan(
             )
         else:
             rejected[reason] += 1
+            if len(ledger.inflight) >= ledger.speculative_inflight_limit:
+                # Once all reservations are occupied, only fully coalesced
+                # candidates can proceed. Preserve those without rescanning
+                # every blocked expert's victim and transfer constraints.
+                joined = [
+                    candidate
+                    for candidate in candidates
+                    if all(
+                        (rank, candidate[1], candidate[2]) in ledger.inflight
+                        for rank in ledger.expert_bytes
+                    )
+                ]
+                rejected["speculative_inflight"] += len(candidates) - len(joined)
+                candidates = joined
+                heapq.heapify(candidates)
     if candidates:
         rejected["churn_limit"] += len(candidates)
     return {

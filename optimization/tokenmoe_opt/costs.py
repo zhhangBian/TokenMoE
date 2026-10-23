@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from tokenmoe_collect.assets import sha256_file
+from tokenmoe_collect.ids import content_id
 from tokenmoe_collect.jsonl import read_jsonl
 
 from .artifacts import Output, manifest, read_manifest
@@ -21,11 +22,47 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
         raise ValueError("Copy profiles require source-stable live executions")
     if [t["tokens"] for t in native["trials"]] != [t["tokens"] for t in cached["trials"]]:
         raise ValueError("Cost fitting requires matching baseline/cached greedy outputs")
-    for key in ("model", "tensor_parallel_size", "dtype", "max_model_len", "max_num_seqs"):
+    for key in (
+        "model",
+        "tensor_parallel_size",
+        "dtype",
+        "max_model_len",
+        "max_num_seqs",
+        "max_num_batched_tokens",
+        "kv_cache_memory_bytes",
+        "enforce_eager",
+        "async_scheduling",
+        "enable_prefix_caching",
+        "kernel_config",
+    ):
         if native["config"][key] != cached["config"][key]:
             raise ValueError(f"Cost fitting configurations differ: {key}")
+    model_path = Path(cached["config"]["model"])
+    metadata = model_path / ".cache/huggingface/download/config.json.metadata"
+    config_path, tokenizer_path = model_path / "config.json", model_path / "tokenizer.json"
+    revision = (
+        metadata.read_text().splitlines()[0]
+        if metadata.exists()
+        else content_id(json.loads(config_path.read_text()))
+    )
+    if (
+        revision != inputs["identity"]["weight_revision"]
+        or sha256_file(tokenizer_path) != inputs["identity"]["tokenizer_hash"]
+    ):
+        raise ValueError("Measured checkpoint/tokenizer differs from predictor input identity")
     out = Output(output, kind="cost-profile", identity=inputs["identity"], command=command)
-    sources, ranks, durations, critical = {}, {}, [], []
+    sources = {
+        str(path.resolve()): sha256_file(path)
+        for path in (
+            inputs_path,
+            native_root / "result.json",
+            cache_root / "result.json",
+            config_path,
+            tokenizer_path,
+            *([metadata] if metadata.exists() else []),
+        )
+    }
+    ranks, durations, critical = {}, [], []
     try:
         for path in sorted((cache_root / "observations").glob("*/cache-rank-*.jsonl")):
             sources[str(path)] = sha256_file(path)
@@ -56,6 +93,7 @@ def fit(native_root, cache_root, inputs_path, output, *, command):
                     yield event
 
             status_path = path.with_suffix(".status.json")
+            sources[str(status_path)] = sha256_file(status_path)
             status = json.loads(status_path.read_text())
             validation = validate_cache_events(
                 events(), status=status, expected_layers=inputs["identity"]["layers"]
